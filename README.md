@@ -60,18 +60,11 @@ O backend é uma API RESTful de alta performance construída com FastAPI.
 
 ---
 
-### 4. Funcionalidades da Interface (Frontend)
-
-- **Cadastro e Login de Usuários**: Acesso seguro à plataforma.
-- **Cadastro de Termos**: Palavras-chave e frases a serem monitoradas.
-- **Cadastro de Concorrentes**: Para análise comparativa.
----
-
-### 5. Estratégia de Deploy (Google Cloud Run)
+## Estratégia de Deploy (Google Cloud Run)
 
 Esta seção detalha os passos para realizar o deploy das aplicações de frontend e backend no Google Cloud Run.
 
-#### 5.1 Backend (FastAPI)
+### Backend (FastAPI)
 
 O deploy do backend é realizado em dois passos principais:
 
@@ -87,7 +80,7 @@ O deploy do backend é realizado em dois passos principais:
     gcloud run deploy social-listening-backend --image gcr.io/[PROJECT_ID]/social-listening-backend --platform managed --region us-central1 --allow-unauthenticated --port 8000
     ```
 
-#### 5.2 Frontend (Next.js)
+### Frontend (Next.js)
 
 O deploy do frontend requer a passagem de variáveis de ambiente para o processo de build do Next.js.
 
@@ -111,7 +104,7 @@ O deploy do frontend requer a passagem de variáveis de ambiente para o processo
 
 ---
 
-## Começando
+## Front End - Executando Localmente 
 
 Primeiro, execute o servidor de desenvolvimento:
 
@@ -131,17 +124,45 @@ Você pode começar a editar a página modificando `app/page.tsx`. A página é 
 
 Este projeto usa [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) para otimizar e carregar automaticamente a [Geist](https://vercel.com/font), uma nova família de fontes da Vercel.
 
-## Saiba Mais
+---
 
-Para aprender mais sobre o Next.js, consulte os seguintes recursos:
+## BackEnd - Executando Localmente
 
-- [Documentação do Next.js](https://nextjs.org/docs) - aprenda sobre os recursos e a API do Next.js.
-- [Aprenda Next.js](https://nextjs.org/learn) - um tutorial interativo de Next.js.
+Para executar o servidor backend localmente, siga estes passos a partir do diretório raiz do projeto:
 
-Você pode conferir [o repositório do Next.js no GitHub](https://github.com/vercel/next.js) - feedbacks e contribuições são bem-vindos!
+1.  **Navegue até o diretório do backend:**
+    ```bash
+    cd backend
+    ```
 
-## Deploy na Vercel
+2.  **Crie e ative um ambiente virtual:**
+    ```bash
+    # Criar o ambiente virtual
+    python -m venv venv
 
-A maneira mais fácil de implantar sua aplicação Next.js é usando a [Plataforma Vercel](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme), dos criadores do Next.js.
+    # Ativar no Windows
+    .\venv\Scripts\activate
 
-Confira nossa [documentação de deploy do Next.js](https://nextjs.org/docs/app/building-your-application/deploying) para mais detalhes.
+    # Ativar no macOS/Linux
+    source venv/bin/activate
+    ```
+
+3.  **Instale as dependências:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Configure as variáveis de ambiente:**
+    - Crie uma cópia do arquivo `.env.example` e renomeie para `.env`.
+    - Neste novo arquivo `.env`, defina a variável `GOOGLE_APPLICATION_CREDENTIALS` com o caminho para o seu arquivo de credenciais JSON do Firebase.
+    ```
+    GOOGLE_APPLICATION_CREDENTIALS="caminho/para/seu/arquivo.json"
+    ```
+
+5.  **Execute o servidor:**
+    O servidor irá recarregar automaticamente após qualquer alteração no código.
+    ```bash
+    uvicorn main:app --reload
+    ```
+
+O servidor estará disponível em [http://127.0.0.1:8000](http://127.0.0.1:8000).
