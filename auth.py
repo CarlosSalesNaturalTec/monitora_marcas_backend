@@ -1,6 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from firebase_admin import auth
+from typing import Optional
 
 # Importa o módulo para garantir que o SDK seja inicializado
 import firebase_admin_init
@@ -21,7 +22,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(reusabl
         )
     
     try:
-        # O token é o que vem depois de "Bearer "
         id_token = credentials.credentials
         decoded_token = auth.verify_id_token(id_token)
         return decoded_token
@@ -35,3 +35,17 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(reusabl
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno na verificação do token: {e}",
         )
+
+def get_current_admin_user(current_user: dict = Depends(get_current_user)):
+    """
+    Dependência que verifica se o usuário atual é um administrador.
+
+    Reutiliza get_current_user e verifica o custom claim 'role'.
+    Lança HTTPException 403 se o usuário não for admin.
+    """
+    if current_user.get("role") != "ADM":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado. Permissões de administrador necessárias.",
+        )
+    return current_user

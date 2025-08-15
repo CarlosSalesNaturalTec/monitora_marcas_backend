@@ -3,5 +3,5 @@ uvicorn[standard]
 google-cloud-firestore
 firebase-admin
 python-jose[cryptography]
-pydantic
+pydantic[email]
 python-dotenv
