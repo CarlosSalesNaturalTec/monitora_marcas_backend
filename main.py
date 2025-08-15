@@ -11,7 +11,7 @@ app = FastAPI(
 # Configuração do CORS
 origins = [
     "http://localhost:3000", # A origem do seu frontend Next.js
-    # Adicione outras origens se necessário (ex: a URL de produção do seu frontend)
+    "https://social-listening-frontend-270453017143.us-central1.run.app" # URL de produção do frontend
 ]
 
 app.add_middleware(

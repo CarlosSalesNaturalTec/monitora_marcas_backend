@@ -80,6 +80,14 @@ O deploy do backend é realizado em dois passos principais:
     gcloud run deploy social-listening-backend --image gcr.io/[PROJECT_ID]/social-listening-backend --platform managed --region us-central1 --allow-unauthenticated --port 8000
     ```
 
+3.  **No Google GCP Console :**
+* Criar Bucket privado com bloqueio de acesso público;
+* Salvar credencial do Firebase (.json) no bucket;
+* No Console do Cloud Run adicionar volume e apontar para o bucket criado;
+* No Console do Cloud Run adicionar variável de ambiente: GOOGLE_APPLICATION_CREDENTIALS="path/to/credentials.json".
+
+---
+
 ### Frontend (Next.js)
 
 O deploy do frontend requer a passagem de variáveis de ambiente para o processo de build do Next.js.
