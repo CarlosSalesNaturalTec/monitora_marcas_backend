@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from auth import get_current_user
 
 app = FastAPI(
@@ -6,6 +7,21 @@ app = FastAPI(
     description="Backend para o sistema de monitoramento de marcas.",
     version="0.1.0",
 )
+
+# Configuração do CORS
+origins = [
+    "http://localhost:3000", # A origem do seu frontend Next.js
+    # Adicione outras origens se necessário (ex: a URL de produção do seu frontend)
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Permite todos os métodos (GET, POST, etc.)
+    allow_headers=["*"], # Permite todos os cabeçalhos
+)
+
 
 @app.get("/")
 def read_root():
