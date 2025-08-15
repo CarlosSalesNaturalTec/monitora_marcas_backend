@@ -55,9 +55,12 @@ def read_current_user(current_user: dict = Depends(get_current_user)):
     Retorna as informações do usuário logado, incluindo seu custom claim 'role'.
     """
     uid = current_user.get("uid")
-    user_record = auth.get_user(uid)
-    role = user_record.custom_claims.get("role") if user_record.custom_claims else None
-    
+    try:
+        user_record = auth.get_user(uid)
+        role = user_record.custom_claims.get("role") if user_record.custom_claims else None
+    except auth.UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+
     return {
         "uid": uid,
         "email": current_user.get("email"),
