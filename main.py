@@ -1,12 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import users
+from routers import users, terms
 
 # --- FastAPI App Initialization ---
 
 app = FastAPI(
-    title="API do Social Listening Platform",
+    title="API do Social listening Platform",
     description="Backend para o sistema de monitoramento de marcas.",
     version="0.3.0",
 )
@@ -26,6 +26,8 @@ app.add_middleware(
 # --- Include Routers ---
 
 app.include_router(users.router)
+app.include_router(terms.router)
+
 
 # --- Root Endpoint ---
 

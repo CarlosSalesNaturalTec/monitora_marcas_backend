@@ -1,22 +1,27 @@
 import firebase_admin
-from firebase_admin import credentials
-from dotenv import load_dotenv
+from firebase_admin import credentials, firestore
 import os
+from dotenv import load_dotenv
 
-load_dotenv() # Carrega as variáveis de ambiente do arquivo .env
+# Carrega as variáveis de ambiente do arquivo .env
+load_dotenv()
 
-def initialize_firebase_admin():
+# --- Inicialização do Firebase Admin SDK ---
+
+# Garante que a inicialização ocorra apenas uma vez.
+if not firebase_admin._apps:
+    # Usa a credencial principal, que agora tem permissão para o Firestore.
     cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    
     if cred_path:
+        # Inicializa usando o arquivo de credenciais (desenvolvimento local)
         cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
-        print("Firebase Admin SDK inicializado com sucesso.")
     else:
-        print("A variável de ambiente GOOGLE_APPLICATION_CREDENTIALS não está definida.")
-        # Em um ambiente de produção como o Cloud Run, a inicialização pode ocorrer automaticamente.
-        # Se a variável não estiver definida, o SDK tentará usar as credenciais do ambiente.
+        # Permite a inicialização automática em ambientes como o Google Cloud Run
         firebase_admin.initialize_app()
-        print("Tentando inicialização automática do Firebase Admin SDK.")
 
-# Inicializa o SDK quando este módulo é importado
-initialize_firebase_admin()
+# --- Cliente Firestore ---
+
+# Cria a instância do cliente Firestore a partir do app padrão.
+db = firestore.client()
