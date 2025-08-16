@@ -1,38 +1,45 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
+from pydantic import BaseModel, EmailStr, constr
+from typing import Optional
 from firebase_admin import auth
 
 from auth import get_current_user, get_current_admin_user
 
-# --- Pydantic Models ---
+# --- Pydantic Models for Admin Operations ---
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
-    role: str  # "ADM" ou "OPERADOR"
+    password: constr(min_length=6)
+    role: str
 
-class UserUpdate(BaseModel):
-    role: str # "ADM" ou "OPERADOR"
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.role not in ["ADM", "OPERADOR"]:
+            raise ValueError("Permissão (role) inválida. Use 'ADM' ou 'OPERADOR'.")
 
+class UserPasswordChange(BaseModel):
+    email: EmailStr
+    new_password: constr(min_length=6)
+
+class UserDelete(BaseModel):
+    email: EmailStr
+    
 class UserResponse(BaseModel):
     uid: str
     email: str
     role: Optional[str] = None
-    disabled: bool
 
 # --- FastAPI App Initialization ---
 
 app = FastAPI(
     title="API do Social Listening Platform",
     description="Backend para o sistema de monitoramento de marcas.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 origins = [
     "http://localhost:3000",
-    "https://social-listening-frontend-270453017143.us-central1.run.app"
 ]
 
 app.add_middleware(
@@ -49,7 +56,7 @@ app.add_middleware(
 def read_root():
     return {"message": "Backend do Social Listening Platform está no ar!"}
 
-@app.get("/users/me")
+@app.get("/users/me", response_model=UserResponse)
 def read_current_user(current_user: dict = Depends(get_current_user)):
     """
     Retorna as informações do usuário logado, incluindo seu custom claim 'role'.
@@ -58,28 +65,18 @@ def read_current_user(current_user: dict = Depends(get_current_user)):
     try:
         user_record = auth.get_user(uid)
         role = user_record.custom_claims.get("role") if user_record.custom_claims else None
+        return UserResponse(uid=uid, email=user_record.email, role=role)
     except auth.UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
 
-    return {
-        "uid": uid,
-        "email": current_user.get("email"),
-        "role": role
-    }
+# --- Admin User Management Endpoints ---
 
-# --- User Management Endpoints (Admin Only) ---
-
-@app.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def create_user(user_data: UserCreate, admin_user: dict = Depends(get_current_admin_user)):
+@app.post("/admin/create-user", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def create_user_endpoint(user_data: UserCreate, admin_user: dict = Depends(get_current_admin_user)):
     """
-    Cria um novo usuário no Firebase Authentication e define sua permissão (role).
+    Cria um novo usuário com email, senha e permissão (role).
     (Acesso restrito a administradores)
     """
-    if user_data.role not in ["ADM", "OPERADOR"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Permissão (role) inválida. Use 'ADM' ou 'OPERADOR'."
-        )
     try:
         new_user = auth.create_user(
             email=user_data.email,
@@ -90,13 +87,17 @@ def create_user(user_data: UserCreate, admin_user: dict = Depends(get_current_ad
         return UserResponse(
             uid=new_user.uid,
             email=new_user.email,
-            role=user_data.role,
-            disabled=new_user.disabled
+            role=user_data.role
         )
     except auth.EmailAlreadyExistsError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"O email '{user_data.email}' já está em uso."
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         )
     except Exception as e:
         raise HTTPException(
@@ -104,64 +105,44 @@ def create_user(user_data: UserCreate, admin_user: dict = Depends(get_current_ad
             detail=f"Erro ao criar usuário: {e}"
         )
 
-@app.get("/users", response_model=List[UserResponse])
-def list_users(admin_user: dict = Depends(get_current_admin_user)):
+@app.post("/admin/change-password", status_code=status.HTTP_200_OK)
+def change_password_endpoint(request: UserPasswordChange, admin_user: dict = Depends(get_current_admin_user)):
     """
-    Lista todos os usuários do Firebase Authentication.
+    Altera a senha de um usuário existente.
     (Acesso restrito a administradores)
     """
-    users = []
     try:
-        for user_record in auth.list_users().iterate_all():
-            role = user_record.custom_claims.get("role") if user_record.custom_claims else None
-            users.append(UserResponse(
-                uid=user_record.uid,
-                email=user_record.email,
-                role=role,
-                disabled=user_record.disabled
-            ))
-        return users
+        user = auth.get_user_by_email(request.email)
+        auth.update_user(user.uid, password=request.new_password)
+        return {"message": f"Senha do usuário {request.email} alterada com sucesso."}
+    except auth.UserNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Usuário com email '{request.email}' não encontrado."
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao listar usuários: {e}"
+            detail=f"Erro ao alterar a senha: {e}"
         )
 
-@app.put("/users/{uid}", response_model=UserResponse)
-def update_user_role(uid: str, user_data: UserUpdate, admin_user: dict = Depends(get_current_admin_user)):
+@app.post("/admin/delete-user", status_code=status.HTTP_200_OK)
+def delete_user_endpoint(request: UserDelete, admin_user: dict = Depends(get_current_admin_user)):
     """
-    Atualiza a permissão (role) de um usuário específico.
+    Exclui um usuário com base no email.
     (Acesso restrito a administradores)
     """
-    if user_data.role not in ["ADM", "OPERADOR"]:
+    try:
+        user = auth.get_user_by_email(request.email)
+        auth.delete_user(user.uid)
+        return {"message": f"Usuário {request.email} excluído com sucesso."}
+    except auth.UserNotFoundError:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Permissão (role) inválida. Use 'ADM' ou 'OPERADOR'."
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Usuário com email '{request.email}' não encontrado."
         )
-    try:
-        auth.set_custom_user_claims(uid, {'role': user_data.role})
-        updated_user = auth.get_user(uid)
-        return UserResponse(
-            uid=updated_user.uid,
-            email=updated_user.email,
-            role=updated_user.custom_claims.get("role"),
-            disabled=updated_user.disabled
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao excluir usuário: {e}"
         )
-    except auth.UserNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao atualizar usuário: {e}")
-
-@app.delete("/users/{uid}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(uid: str, admin_user: dict = Depends(get_current_admin_user)):
-    """
-    Exclui um usuário do Firebase Authentication.
-    (Acesso restrito a administradores)
-    """
-    try:
-        auth.delete_user(uid)
-        return
-    except auth.UserNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao excluir usuário: {e}")
