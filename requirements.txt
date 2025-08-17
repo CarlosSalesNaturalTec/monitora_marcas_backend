@@ -5,3 +5,4 @@ firebase-admin
 python-jose[cryptography]
 pydantic[email]
 python-dotenv
+requests

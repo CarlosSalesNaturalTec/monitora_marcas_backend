@@ -9,3 +9,7 @@ class TermGroup(BaseModel):
 class SearchTerms(BaseModel):
     brand: TermGroup = Field(default_factory=TermGroup)
     competitors: TermGroup = Field(default_factory=TermGroup)
+
+class PreviewResult(BaseModel):
+    brand_results: List[str]
+    competitor_results: List[str]
