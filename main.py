@@ -17,6 +17,7 @@ app = FastAPI(
 
 origins = [
     "http://localhost:3000",
+    "https://social-listening-frontend-270453017143.us-central1.run.app",
 ]
 
 app.add_middleware(
