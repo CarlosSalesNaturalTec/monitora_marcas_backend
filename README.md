@@ -109,3 +109,5 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - Permite o CRUD (Criar, Ler, Atualizar, Deletar) de termos principais, sinônimos e termos a excluir.
   - A interface é dividida em abas para "Marca" e "Concorrentes".
   - O acesso para edição é restrito a usuários com a permissão `ADM`. Usuários não-administradores visualizam os termos em modo somente leitura.
+  - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
+
