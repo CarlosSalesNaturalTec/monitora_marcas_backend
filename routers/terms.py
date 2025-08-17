@@ -33,8 +33,8 @@ def _build_query_string(term_group: TermGroup) -> str:
 
     return " ".join(query_parts)
 
-def _perform_google_search(query: str) -> List[str]:
-    """Executa a busca na API do Google CSE e retorna uma lista de URLs."""
+def _perform_google_search(query: str) -> List[dict]:
+    """Executa a busca na API do Google CSE e retorna uma lista de dicionários com link e htmlSnippet."""
     api_key = os.getenv("GOOGLE_API_KEY")
     cse_id = os.getenv("GOOGLE_CSE_ID")
     
@@ -52,19 +52,20 @@ def _perform_google_search(query: str) -> List[str]:
         "key": api_key,
         "cx": cse_id,
         "q": query,
-        "sort": "date",  # Ordena por data
-        "dateRestrict": "d1",  # Restringe a resultados dos últimos 1 dia
+        "num": 10 # Limita a 10 resultados, conforme solicitado (sem paginação)
     }
     
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
         search_results = response.json()
-
-        print(response.json())  # Log para depuração
         
         items = search_results.get("items", [])
-        return [item.get("link", "") for item in items if "link" in item]
+        # Retorna um dicionário com 'link' e 'htmlSnippet' para cada item
+        return [
+            {"link": item.get("link", ""), "htmlSnippet": item.get("htmlSnippet", "")}
+            for item in items if "link" in item
+        ]
         
     except requests.exceptions.RequestException as e:
         raise HTTPException(

@@ -10,6 +10,10 @@ class SearchTerms(BaseModel):
     brand: TermGroup = Field(default_factory=TermGroup)
     competitors: TermGroup = Field(default_factory=TermGroup)
 
+class SearchResultItem(BaseModel):
+    link: str
+    htmlSnippet: str
+
 class PreviewResult(BaseModel):
-    brand_results: List[str]
-    competitor_results: List[str]
+    brand_results: List[SearchResultItem]
+    competitor_results: List[SearchResultItem]
