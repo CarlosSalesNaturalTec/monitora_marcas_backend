@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
 
-from routers import users, terms
+from routers import users, terms, monitor
 
 # --- FastAPI App Initialization ---
 
@@ -32,6 +32,7 @@ app.add_middleware(
 
 app.include_router(users.router)
 app.include_router(terms.router)
+app.include_router(monitor.router)
 
 
 # --- Root Endpoint ---

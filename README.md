@@ -111,3 +111,12 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - O acesso para edição é restrito a usuários com a permissão `ADM`. Usuários não-administradores visualizam os termos em modo somente leitura.
   - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
 
+- **Sistema/Monitorar (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados.
+  - Realiza buscas na API do Google Custom Search Engine (CSE) para os termos de "Marca" e "Concorrentes".
+  - A busca é paginada, coletando até 100 resultados (10 páginas) para obter uma amostragem relevante.
+  - Os resultados de cada busca (metadados da execução e links encontrados) são armazenados em coleções separadas no Firestore para análise futura.
+  - A interface exibe os resultados da última coleta realizada, separando por abas de "Marca" e "Concorrentes".
+  - Para evitar coletas duplicadas ou acidentais, o botão para iniciar uma nova busca é desabilitado caso já exista uma coleta de dados.
+  - A funcionalidade está dividida em "Dados do Agora" (Etapa 01, implementada) e prevê uma futura visualização de "Dados do Passado" (Etapa 02).
+
+
