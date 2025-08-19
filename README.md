@@ -117,6 +117,7 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - Os resultados de cada busca (metadados da execução e links encontrados) são armazenados em coleções separadas no Firestore para análise futura.
   - A interface exibe os resultados da última coleta realizada, separando por abas de "Marca" e "Concorrentes".
   - Para evitar coletas duplicadas ou acidentais, o botão para iniciar uma nova busca é desabilitado caso já exista uma coleta de dados.
+  - Oferece uma opção para **limpar os dados** da última coleta, permitindo que o usuário execute uma nova busca quando necessário.
   - A funcionalidade está dividida em "Dados do Agora" (Etapa 01, implementada) e prevê uma futura visualização de "Dados do Passado" (Etapa 02).
 
 

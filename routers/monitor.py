@@ -212,3 +212,58 @@ def get_latest_monitor_data(current_user: dict = Depends(get_current_user)):
             )
             
     return latest_data
+
+@router.delete("/monitor/latest", status_code=status.HTTP_200_OK, tags=["Monitor"])
+def delete_latest_monitor_data(current_user: dict = Depends(get_current_user)):
+    """
+    Encontra e exclui as últimas execuções de monitoramento ('brand' e 'competitors')
+    e todos os resultados de busca associados a elas.
+    """
+    runs_to_delete = []
+
+    for group_name in ["brand", "competitors"]:
+        try:
+            # 1. Encontra a última execução para o grupo
+            runs_query = db.collection("monitor_runs") \
+                .where("search_group", "==", group_name) \
+                .order_by("collected_at", direction=firestore.Query.DESCENDING) \
+                .limit(1)
+            
+            run_docs = list(runs_query.stream())
+            if run_docs:
+                runs_to_delete.append(run_docs[0])
+
+        except Exception as e:
+            # Ignora erros de busca (ex: índice não existe), mas loga para debug
+            print(f"Não foi possível buscar a última execução para '{group_name}': {e}")
+            continue
+    
+    if not runs_to_delete:
+        return {"message": "Nenhuma coleta de dados para excluir."}
+
+    # 2. Inicia um batch para as exclusões
+    batch = db.batch()
+    deleted_count = 0
+
+    for run_doc in runs_to_delete:
+        run_id = run_doc.id
+        
+        # 3. Exclui os resultados associados ao run_id
+        results_query = db.collection("monitor_results").where("run_id", "==", run_id)
+        result_docs = list(results_query.stream())
+        
+        for doc in result_docs:
+            batch.delete(doc.reference)
+        
+        # 4. Exclui o próprio documento da execução
+        batch.delete(run_doc.reference)
+        deleted_count += len(result_docs) + 1
+
+    try:
+        batch.commit()
+        return {"message": f"Coleta de dados excluída com sucesso. {deleted_count} documentos removidos."}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao excluir dados no Firestore: {e}"
+        )
