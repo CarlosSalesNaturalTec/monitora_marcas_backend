@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from google.cloud.firestore_v1.base_document import DocumentSnapshot
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import os
 from typing import List
 
@@ -13,19 +15,31 @@ router = APIRouter()
 COLLECTION_NAME = "platform_config"
 DOCUMENT_ID = "search_terms"
 
-# --- Helper Function for Google Search ---
+# --- Helper Functions ---
+
+def _create_session_with_retries() -> requests.Session:
+    """Cria uma sessão de requests com política de retry para robustez."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 def _build_query_string(term_group: TermGroup) -> str:
     """Constrói a string de busca a partir de um grupo de termos."""
     main_and_synonyms = term_group.main_terms + term_group.synonyms
     
-    # Une termos principais e sinônimos com "OR"
     query_parts = []
     if main_and_synonyms:
         or_part = " OR ".join(f'"{term}"' for term in main_and_synonyms)
         query_parts.append(f"({or_part})")
         
-    # Adiciona termos de exclusão com "-"
     for term in term_group.excluded_terms:
         query_parts.append(f'-"{term}"')
 
@@ -47,19 +61,16 @@ def _perform_google_search(query: str) -> List[dict]:
 
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
-        "key": api_key,
-        "cx": cse_id,
-        "q": query,
-        "num": 10 # Limita a 10 resultados, conforme solicitado (sem paginação)
+        "key": api_key, "cx": cse_id, "q": query, "num": 10
     }
     
     try:
-        response = requests.get(url, params=params)
+        session = _create_session_with_retries()
+        response = session.get(url, params=params, timeout=(3.05, 10))
         response.raise_for_status()
         search_results = response.json()
         
         items = search_results.get("items", [])
-        # Retorna um dicionário com 'link' e 'htmlSnippet' para cada item
         return [
             {"link": item.get("link", ""), "htmlSnippet": item.get("htmlSnippet", "")}
             for item in items if "link" in item

@@ -1,5 +1,5 @@
-1 - Implementar endpoint para dados continuios
-2 - Melhorar Consulta de dados históricos
+ok - 1 - Implementar endpoint para dados continuios
+ok - 2 - Melhorar Consulta de dados históricos
 3 - Implementar endpoint para Dados Históricos - continuação
 4 - Unificar pesquisas : agora e histórico
 5 - Criar resumo 
@@ -34,13 +34,16 @@ Mantendo as funcionalidades já existentes no sistema, vamos dar continuidade ao
 
 # 2 - Melhorar Consulta de dados históricos
 
-Na consulta histórica , verificar se pode melhorar os seguintes itens:
+Verificar se pode melhorar os seguintes itens:
 
-1 - Timeout/backoff ausentes nas chamadas à API do Google. requests.get() não define timeout nem política de retry/backoff exponencial. Qualquer latência ou falha intermitente pode travar a execução ou gerar 503 recorrentes
+1 - Timeout/backoff ausentes nas chamadas à API do Google. requests.get() não define timeout nem política de retry/backoff exponencial. Qualquer latência ou falha intermitente pode travar a execução ou gerar 503 recorrentes.
 
 2 - Consulta "histórica" não registra dias sem resultados. Nos dias em que a busca retorna 0 itens, nada é salvo. Isso gera "buracos" na linha do tempo e dificulta auditoria/relatórios. Pode ser interessante salvar um MonitorRun com total_results_found=0.
 
-3 - Falta de parâmetros úteis do CSE. Você não envia filter=1 (dedupe do Google), nem hl/gl/lr (idioma/país), nem safe. Isso pode aumentar duplicatas/ruído e resultados fora do seu alvo (BR/pt-BR)
+3 - Em todas as consultas Falta de parâmetros úteis do CSE. Você não envia hl/gl/lr (idioma/país). Isso pode aumentar duplicatas/ruído e resultados fora do seu alvo (BR/pt-BR)
+
+4 - Adicionar, nas consultas de dados Relevantes e Dados históricos, log detalhado de cada requisição no Firestore para fins de auditoria e depuração, semelhante ao implementado na consulta de dados continuos.
+
 
 
 # 3 - Implementar endpoint para Dados Históricos - continuação

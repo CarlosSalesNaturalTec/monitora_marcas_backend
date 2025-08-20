@@ -130,6 +130,11 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
     - Pagina até um máximo de 10 páginas por grupo de termos, respeitando a cota diária de requisições.
     - Verifica duplicatas de URLs antes de salvar novos resultados no Firestore.
     - Cria um log detalhado de cada requisição no Firestore para fins de auditoria e depuração.
+  - **Exclusão de Dados (Limpeza Total)**:
+    - Endpoint: `DELETE /monitor/all-data`
+    - Exclui permanentemente **todos** os dados relacionados ao monitoramento, limpando as coleções `monitor_runs`, `monitor_results`, `monitor_logs` e `daily_quotas`.
+    - Esta é uma operação destrutiva e deve ser usada com cuidado, geralmente para reiniciar o ambiente de monitoramento.
+    - O acesso é restrito a usuários com a permissão `ADM`.
   - **Controle de Cota**:
     - Implementa um contador global que limita o total de requisições à API do Google a 100 por dia, somando todos os tipos de busca.
     - Caso a cota diária seja atingida, o processo de coleta é interrompido.

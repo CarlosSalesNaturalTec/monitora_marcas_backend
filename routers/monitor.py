@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, date, timedelta
@@ -12,7 +14,7 @@ from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
     HistoricalRunRequest, HistoricalMonitorData, MonitorLog
 )
-from auth import get_current_user
+from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
 from routers.terms import get_search_terms, _build_query_string
 
@@ -21,6 +23,22 @@ router = APIRouter()
 # --- Constantes ---
 QUOTA_COLLECTION = "daily_quotas"
 MAX_DAILY_REQUESTS = 100
+
+# --- Configuração de Sessão com Retry ---
+
+def _create_session_with_retries() -> requests.Session:
+    """Cria uma sessão de requests com política de retry para robustez."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 # --- Funções Auxiliares de Cota Diária ---
 
@@ -45,7 +63,7 @@ def _increment_quota(requests_made: int):
         doc_ref = _get_daily_quota_doc_ref()
         doc_ref.set({"count": firestore.Increment(requests_made)}, merge=True)
 
-# --- Helpers for Continuous Monitoring ---
+# --- Helpers ---
 
 def _get_platform_search_terms() -> SearchTerms:
     """Busca os termos de pesquisa da plataforma diretamente do Firestore."""
@@ -59,13 +77,13 @@ def _get_platform_search_terms() -> SearchTerms:
         print(f"CRITICAL: Erro ao buscar os termos de pesquisa: {e}")
         return SearchTerms()
 
-def _log_request(run_id: str, search_group: str, page: int, results_count: int, new_urls_saved: int):
+def _log_request(run_id: str, search_group: str, page: int, results_count: int, new_urls_saved: int, date_for_log: Optional[date] = None):
     """Salva um log de uma única requisição da API do Google."""
     try:
         log_ref = db.collection("monitor_logs").document()
         
-        today = date.today()
-        start_of_day = datetime.combine(today, datetime.min.time())
+        log_date = date_for_log if date_for_log else date.today()
+        start_of_day = datetime.combine(log_date, datetime.min.time())
 
         log_data = MonitorLog(
             run_id=run_id,
@@ -101,6 +119,7 @@ def run_continuous_monitoring():
 
     search_terms = _get_platform_search_terms()
     total_new_urls_all_groups = 0
+    session = _create_session_with_retries()
     
     for group_name in ["brand", "competitors"]:
         term_group: TermGroup = getattr(search_terms, group_name)
@@ -125,7 +144,7 @@ def run_continuous_monitoring():
                     "key": api_key, "cx": cse_id, "q": query_string,
                     "num": 10, "start": start_index, "dateRestrict": "d1"
                 }
-                response = requests.get(url, params=params)
+                response = session.get(url, params=params, timeout=(3.05, 10))
                 _increment_quota(1)
                 response.raise_for_status()
                 search_results = response.json()
@@ -182,13 +201,16 @@ def run_continuous_monitoring():
 # --- Auxiliar de Busca do Google ---
 
 def _perform_paginated_google_search(
+    session: requests.Session,
     query: str, 
     pages_to_fetch: int,
+    run_id: str,
+    search_group: str,
     date_range: Optional[Dict[str, date]] = None
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
-    Executa uma busca paginada na API do Google CSE e retorna os resultados
-    junto com o número de requisições feitas.
+    Executa uma busca paginada na API do Google CSE, registra cada requisição
+    e retorna os resultados junto com o número de requisições feitas.
     """
     api_key = os.getenv("GOOGLE_API_KEY")
     cse_id = os.getenv("GOOGLE_CSE_ID")
@@ -209,25 +231,34 @@ def _perform_paginated_google_search(
     for page in range(pages_to_fetch):
         start_index = 1 + page * 10
         params = {
-            "key": api_key,
-            "cx": cse_id,
-            "q": query,
-            "num": 10,
-            "start": start_index,
+            "key": api_key, "cx": cse_id, "q": query,
+            "num": 10, "start": start_index
         }
         
+        current_day_for_log = date_range.get("start") if date_range else None
+
         if date_range and date_range.get("start") and date_range.get("end"):
             start_str = date_range["start"].strftime("%Y%m%d")
             end_str = date_range["end"].strftime("%Y%m%d")
             params["sort"] = f"date:r:{start_str}:{end_str}"
         
         try:
-            response = requests.get(url, params=params)
+            response = session.get(url, params=params, timeout=(3.05, 10))
             requests_made += 1
             response.raise_for_status()
             search_results = response.json()
             
             items = search_results.get("items", [])
+            
+            _log_request(
+                run_id=run_id,
+                search_group=search_group,
+                page=page + 1,
+                results_count=len(items),
+                new_urls_saved=len(items),
+                date_for_log=current_day_for_log
+            )
+
             if not items:
                 break
             
@@ -243,27 +274,28 @@ def _perform_paginated_google_search(
 
 # --- Auxiliar para Salvar Dados no Firestore ---
 
-def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem]) -> str:
+def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem], run_id: Optional[str] = None) -> str:
     """Salva os metadados da execução e os resultados da busca no Firestore."""
     try:
-        run_ref = db.collection("monitor_runs").document()
+        run_ref = db.collection("monitor_runs").document(run_id) if run_id else db.collection("monitor_runs").document()
         run_metadata.id = run_ref.id
         
         run_dict = run_metadata.dict()
         run_ref.set(run_dict)
 
-        batch = db.batch()
-        results_collection_ref = db.collection("monitor_results")
-        
-        for item_data in results:
-            doc_id = item_data.generate_id()
-            doc_ref = results_collection_ref.document(doc_id)
+        if results:
+            batch = db.batch()
+            results_collection_ref = db.collection("monitor_results")
             
-            result_with_run_id = item_data.dict()
-            result_with_run_id["run_id"] = run_ref.id
-            batch.set(doc_ref, result_with_run_id)
-        
-        batch.commit()
+            for item_data in results:
+                doc_id = item_data.generate_id()
+                doc_ref = results_collection_ref.document(doc_id)
+                
+                result_with_run_id = item_data.dict()
+                result_with_run_id["run_id"] = run_ref.id
+                batch.set(doc_ref, result_with_run_id)
+            
+            batch.commit()
         
         return run_ref.id
     except Exception as e:
@@ -283,6 +315,7 @@ def run_and_save_monitoring(current_user: dict = Depends(get_current_user)):
     search_terms: SearchTerms = get_search_terms(current_user)
     response_data = {}
     total_requests_made = 0
+    session = _create_session_with_retries()
 
     for group_name in ["brand", "competitors"]:
         remaining_quota = _get_remaining_quota()
@@ -296,8 +329,12 @@ def run_and_save_monitoring(current_user: dict = Depends(get_current_user)):
         
         if not query_string.strip():
             continue
+        
+        run_id = db.collection("monitor_runs").document().id
 
-        search_results_raw, requests_made = _perform_paginated_google_search(query_string, pages_to_fetch)
+        search_results_raw, requests_made = _perform_paginated_google_search(
+            session, query_string, pages_to_fetch, run_id, group_name
+        )
         _increment_quota(requests_made)
         total_requests_made += requests_made
         
@@ -312,7 +349,7 @@ def run_and_save_monitoring(current_user: dict = Depends(get_current_user)):
             total_results_found=len(monitor_results)
         )
         
-        run_id = _save_monitor_data(run_metadata, monitor_results)
+        _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
         run_metadata.id = run_id
         
         response_data[group_name] = MonitorData(
@@ -337,6 +374,7 @@ def run_historical_monitoring(
     Inicia um preenchimento de dados históricos a partir de uma data de início.
     """
     search_terms: SearchTerms = get_search_terms(current_user)
+    session = _create_session_with_retries()
     
     start_date = request.start_date
     end_date = date.today() - timedelta(days=1)
@@ -362,22 +400,18 @@ def run_historical_monitoring(
                 break
 
             pages_to_fetch = min(10, remaining_quota)
-            
             term_group: TermGroup = getattr(search_terms, group_name)
             query_string = _build_query_string(term_group)
-
-            if not query_string.strip():
-                continue
-
             date_range = {"start": current_date, "end": current_date}
-            
-            search_results_raw, requests_made = _perform_paginated_google_search(
-                query_string, pages_to_fetch, date_range
-            )
-            _increment_quota(requests_made)
+            run_id = db.collection("monitor_runs").document().id
+            search_results_raw = []
+            requests_made = 0
 
-            if not search_results_raw:
-                continue
+            if query_string.strip():
+                search_results_raw, requests_made = _perform_paginated_google_search(
+                    session, query_string, pages_to_fetch, run_id, group_name, date_range
+                )
+                _increment_quota(requests_made)
 
             monitor_results = [
                 MonitorResultItem(**item) for item in search_results_raw if item.get("link")
@@ -393,7 +427,7 @@ def run_historical_monitoring(
                 range_end=start_of_current_date
             )
             
-            run_id = _save_monitor_data(run_metadata, monitor_results)
+            _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
             last_saved_run_id = run_id
 
         if not interrupted:
@@ -513,52 +547,50 @@ def get_historical_monitor_data(current_user: dict = Depends(get_current_user)):
     return historical_data
 
 
-@router.delete("/monitor/latest", status_code=status.HTTP_200_OK, tags=["Monitor"])
-def delete_latest_monitor_data(current_user: dict = Depends(get_current_user)):
-    """
-    Encontra e exclui as últimas execuções de monitoramento 'relevante' e seus resultados.
-    """
-    runs_to_delete = []
+def _delete_collection_in_batches(collection_ref, batch_size: int) -> int:
+    """Exclui todos os documentos de uma coleção em lotes."""
+    total_deleted = 0
+    while True:
+        docs = list(collection_ref.limit(batch_size).stream())
+        if not docs:
+            break
 
-    for group_name in ["brand", "competitors"]:
-        try:
-            runs_query = db.collection("monitor_runs") \
-                .where("search_group", "==", group_name) \
-                .where("search_type", "==", "relevante") \
-                .order_by("collected_at", direction=firestore.Query.DESCENDING) \
-                .limit(1)
-            
-            run_docs = list(runs_query.stream())
-            if run_docs:
-                runs_to_delete.append(run_docs[0])
-
-        except Exception as e:
-            print(f"Não foi possível buscar a última execução para '{group_name}': {e}")
-            continue
-    
-    if not runs_to_delete:
-        return {"message": "Nenhuma coleta de dados relevante para excluir."}
-
-    batch = db.batch()
-    deleted_count = 0
-
-    for run_doc in runs_to_delete:
-        run_id = run_doc.id
-        
-        results_query = db.collection("monitor_results").where("run_id", "==", run_id)
-        result_docs = list(results_query.stream())
-        
-        for doc in result_docs:
+        batch = db.batch()
+        for doc in docs:
             batch.delete(doc.reference)
         
-        batch.delete(run_doc.reference)
-        deleted_count += len(result_docs) + 1
-
-    try:
         batch.commit()
-        return {"message": f"Coleta de dados excluída com sucesso. {deleted_count} documentos removidos."}
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao excluir dados do Firestore: {e}"
-        )
+        
+        total_deleted += len(docs)
+    
+    return total_deleted
+
+@router.delete("/monitor/all-data", status_code=status.HTTP_200_OK, tags=["Monitor"])
+def delete_all_monitor_data(current_user: dict = Depends(get_current_admin_user)):
+    """
+    Exclui TODOS os dados de monitoramento do Firestore, incluindo execuções,
+    resultados, logs e cotas.
+    Use com extremo cuidado.
+    (Acesso restrito a administradores)
+    """
+    collections_to_delete = [
+        "monitor_runs",
+        "monitor_results",
+        "monitor_logs",
+        QUOTA_COLLECTION
+    ]
+    
+    total_docs_deleted = 0
+    
+    for collection_name in collections_to_delete:
+        try:
+            collection_ref = db.collection(collection_name)
+            deleted_count = _delete_collection_in_batches(collection_ref, 200)
+            print(f"Successfully deleted {deleted_count} documents from '{collection_name}'.")
+            total_docs_deleted += deleted_count
+        except Exception as e:
+            print(f"Error deleting collection '{collection_name}': {e}")
+            # Continua para a próxima coleção mesmo em caso de erro
+            continue
+
+    return {"message": f"Limpeza completa concluída. Total de {total_docs_deleted} documentos removidos."}
