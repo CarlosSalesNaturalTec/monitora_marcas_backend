@@ -1,29 +1,95 @@
-Mantendo as funcionalidades já existentes no sistema, vamos dar continuidade ao módulo de Monitoramento com a construção da Etapa 02 a qual realizará a pesquisa de dados do Passado - Histórico.
+1 - Implementar endpoint para dados continuios
+2 - Melhorar Consulta de dados históricos
+3 - Implementar endpoint para Dados Históricos - continuação
+4 - Unificar pesquisas : agora e histórico
+5 - Criar resumo 
+6 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
-* As pesquisas devem ser feitas em duas seções: uma utilizando os termos da marca, e outra, os termos do concorrente. 
+# Implementar endpoint para dados continuios
 
-* Utilizar nesta etapa o parâmetro sort=date:r:YYYYMMDD:YYYYMMDD de modo a obter dados históricos. Utilizar nesta coleta a estratégia de backfill recursivo, para o período de 01/01/2025 até o dia anterior à pesquisa de dados relevantes - Etapa 01 do monitoramento. A data de inicio do período histórico deve ser informada pelo usuário. 
+Mantendo as funcionalidades já existentes no sistema, vamos dar continuidade ao módulo de Monitoramento com a construção de um endpoint para pesquisas de dados contínuos. 
+
+* Este endpoint será acionado via Google Cloud Scheduler duas vezes ao dia.
+
+* As pesquisas geradas por este endpoint devem ser feitas em duas seções: uma utilizando os termos da marca, e outra, os termos do concorrente. 
+
+* Utilizar o parâmetro dateRestrict=d1. 
 
 * Dependendo da quantidade de resultados disponíveis realizar paginação até o máximo de 10 páginas/requisições. 
-* Gerar contador para limitar um máximo de 100 requisições no dia. Ajustar o processo da Etapa 01  de busca de dados do agora-relevante, para também incrementar este contador. Estabelecendo um limite total de 100 requisições no dia, entre pesquisas do agora e pesquisas históricas.
+
+* A cada requisição realizada incrementar o contador global de reqisições diárias que tem estabelecido o limite total de 100 requisições no dia.
 
 * Ao gerar as querys, separar todos os termos principais e sinônimos com o operador OR e envolver o conjunto final de termos entre parênteses. Preceder com hífen os termos excludentes.
 
-* Armazenar no banco firestore na Coleção de controle (monitor_runs): termos da busca, se a busca refere-se à marca ou ao concorrente, tipo=histórico, quantidade_resultados, data da coleta, range_inicio, range_fim.
-
-* Caso a quantidade de resultados disponíveis levando em consideração paginação, e as requisições já realzadas na etapa anterior, necessite de um total de requisições que ultrapasse o limite de 100 requisições diárias, armazenar na coleção de controle a data da última interrupção da coleta de modo que possa ser dado continuidade à pesquisa a partir deste ponto. Esta tarefa de continuar a coleta deve ser realizada por outro processo a ser desenvolvido.
+* Armazenar no banco firestore na Coleção de controle (monitor_runs): termos da busca, se a busca refere-se à marca ou ao concorrente, tipo=contínuo, quantidade_resultados, data e hora da coleta.
 
 * Verificar se Urls obtidas já foram cadastradas anteriorente utilizando o ID do documento/hash da URL de modo a evitar duplicidades de cadastro.
+
 * Para as novas URLs, armazenar em um banco firestore os seguintes dados: ID da Coleta, link, displayLink, title, pagemap, snippet e htmlsnippet. Use hash da URL como ID do documento para evitar duplicidades futuras.
 
-* Os resultados após obtidos devem ser exibidos em tela, além dos metadados como: quantidade de resultados, data da coleta, range_inicio, range_fim, etc.
 
-* Em caso do usuário sair da tela e retornar à mesma, caso a consulta já tenha sido realizada, exibir os dados já obtidos e inabilitar o usuário de realizar nova coleta histórica.
+# 2 - Melhorar Consulta de dados históricos
 
-@frontend/package.json , @frontend\src 
-@backend\main.py , backend\firebase_admin_init.py ,  @backend\auth.py , @backend\schemas , @backend\routers.
+Na consulta histórica , verificar se pode melhorar os seguintes itens:
 
-========================
+1 - Timeout/backoff ausentes nas chamadas à API do Google. requests.get() não define timeout nem política de retry/backoff exponencial. Qualquer latência ou falha intermitente pode travar a execução ou gerar 503 recorrentes
+
+2 - Consulta "histórica" não registra dias sem resultados. Nos dias em que a busca retorna 0 itens, nada é salvo. Isso gera "buracos" na linha do tempo e dificulta auditoria/relatórios. Pode ser interessante salvar um MonitorRun com total_results_found=0.
+
+3 - Falta de parâmetros úteis do CSE. Você não envia filter=1 (dedupe do Google), nem hl/gl/lr (idioma/país), nem safe. Isso pode aumentar duplicatas/ruído e resultados fora do seu alvo (BR/pt-BR)
+
+
+# 3 - Implementar endpoint para Dados Históricos - continuação
+===================
+
+Mantendo as funcionalidades já existentes no sistema, vamos dar continuidade ao módulo de Monitoramento com a construção de um endpoint para pesquisas de dados históricos faltantes. 
+
+* Este endpoint será acionado via Google Cloud Scheduler duas vezes ao dia.
+
+* As pesquisas geradas por este endpoint devem ser feitas em duas seções: uma utilizando os termos da marca, e outra, os termos do concorrente. 
+
+
+Caso tenha dados históricos , dar continuidade
 
 ATENÇÃO! na etapa 03 - que envolve o processo diário de coleta, verificar se ainda faltam dados históricos:
 * Caso o período histórico já tenha sido totalmente coletado, não fazer nada relatico a histórico. Caso não tenha sido realizada totalmente a coleta dos dados históricos devido a diferença entre o período histórico a ser coberto e o limite diário de requisições, permitir que o usuário continue com o processo de busca histórica, a partir da última data realizada.
+
+* 
+
+
+* Dependendo da quantidade de resultados disponíveis realizar paginação até o máximo de 10 páginas/requisições. 
+
+* A cada requisição realizada incrementar o contador global de reqisições diárias que tem estabelecido o limite total de 100 requisições no dia.
+
+* Ao gerar as querys, separar todos os termos principais e sinônimos com o operador OR e envolver o conjunto final de termos entre parênteses. Preceder com hífen os termos excludentes.
+
+* Armazenar no banco firestore na Coleção de controle (monitor_runs): termos da busca, se a busca refere-se à marca ou ao concorrente, tipo=contínuo, quantidade_resultados, data e hora da coleta.
+
+* Verificar se Urls obtidas já foram cadastradas anteriorente utilizando o ID do documento/hash da URL de modo a evitar duplicidades de cadastro.
+
+* Para as novas URLs, armazenar em um banco firestore os seguintes dados: ID da Coleta, link, displayLink, title, pagemap, snippet e htmlsnippet. Use hash da URL como ID do documento para evitar duplicidades futuras.
+
+==========
+
+
+
+# 4 - Unificar pesquisas : agora e histórico
+
+Unificar as pesquisas em um único botão. 
+Ao clicar neste botão o sistema deverá realizar de maneira sequencial as duas etapas da pesquisa: Dados do Agora e Dados Históricos.
+1 - Realizar a pesquisa de Dados do Agora (Relevante).
+2 - Ao concluir, iniciar a pesquisa por Dados do Passado (Histórico).
+3 - No decorrer da pesquisa, exibir na tela informações sobre o seu andamento: Dados do Agora ou Históricos, pesquisa de termos da Marca ou do Concorrente, data range , quantidade de resultados encontrados, página atual, quantidade total de requisições realizadas, etc.
+
+# 5 - Criar resumo do Coleta realizada até o momento
+Criar resumo com:  data, tipo de contulta realizada (relevante, histórica ou recorrente), quantidade de resultados encontrados para marca e concorrente
+
+# 6 - Agendamento de consulta de dados contínuos com Cloud Scheduler
+
+Autenticação
+Endpoints públicos → chamada direta, sem autenticação.
+Endpoints privados no GCP → usa OIDC com uma Service Account.
+Exemplo: chamar um serviço no Cloud Run sem expô-lo publicamente.
+IAP (Identity-Aware Proxy) → também suportado, usando OIDC com Client ID do IAP.
+
+===

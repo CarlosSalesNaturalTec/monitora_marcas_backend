@@ -112,12 +112,19 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
 
 - **Sistema/Monitorar (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados.
-  - Realiza buscas na API do Google Custom Search Engine (CSE) para os termos de "Marca" e "Concorrentes".
-  - A busca é paginada, coletando até 100 resultados (10 páginas) para obter uma amostragem relevante.
-  - Os resultados de cada busca (metadados da execução e links encontrados) são armazenados em coleções separadas no Firestore para análise futura.
-  - A interface exibe os resultados da última coleta realizada, separando por abas de "Marca" e "Concorrentes".
-  - Para evitar coletas duplicadas ou acidentais, o botão para iniciar uma nova busca é desabilitado caso já exista uma coleta de dados.
-  - Oferece uma opção para **limpar os dados** da última coleta, permitindo que o usuário execute uma nova busca quando necessário.
-  - A funcionalidade está dividida em "Dados do Agora" (Etapa 01, implementada) e prevê uma futura visualização de "Dados do Passado" (Etapa 02).
-
-
+  - **Dados do Agora (Busca Relevante)**:
+    - Realiza buscas na API do Google CSE para os termos de "Marca" e "Concorrentes".
+    - A busca é paginada, coletando até 100 resultados (10 páginas) para obter uma amostragem relevante.
+    - Os resultados de cada busca são armazenados no Firestore.
+    - A interface exibe os resultados da última coleta realizada.
+    - Para evitar coletas duplicadas, o botão para iniciar uma nova busca é desabilitado caso já exista uma coleta.
+  - **Dados do Passado (Busca Histórica)**:
+    - Permite ao usuário definir uma data de início para uma coleta retroativa.
+    - Utiliza uma estratégia de *backfill* recursivo, pesquisando dia a dia desde a data de início até a véspera do dia atual.
+    - As buscas são paginadas (até 10 páginas por dia) e utilizam o parâmetro `sort=date` da API do Google.
+    - Os resultados são armazenados no Firestore, com metadados que incluem o intervalo de datas da coleta.
+  - **Controle de Cota**:
+    - Implementa um contador global que limita o total de requisições à API do Google a 100 por dia, somando as buscas de dados do agora e do passado.
+    - Caso a cota diária seja atingida durante uma coleta histórica, o processo é interrompido e a data da interrupção é salva, permitindo a continuação futura.
+  - **Gerenciamento de Duplicatas**:
+    - Utiliza um hash da URL como ID do documento no Firestore para evitar o armazenamento de links duplicados.
