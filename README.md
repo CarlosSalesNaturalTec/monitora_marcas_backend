@@ -7,7 +7,7 @@ A plataforma é composta por dois grandes módulos:
 - **Frontend:** Next.js (React/TypeScript)  
 - **Backend:** FastAPI (Python)  
 - **Autenticação e Banco de Dados:** Firebase (Auth e Firestore)  
-- **Hospedagem:** Google Cloud Run (containers Docker para frontend e backend)
+- **Hospagem:** Google Cloud Run (containers Docker para frontend e backend)
 
 Controle de acesso é feito por **Custom Claims do Firebase Authentication**, permitindo RBAC (role-based access control).
 
@@ -123,8 +123,15 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
     - Utiliza uma estratégia de *backfill* recursivo, pesquisando dia a dia desde a data de início até a véspera do dia atual.
     - As buscas são paginadas (até 10 páginas por dia) e utilizam o parâmetro `sort=date` da API do Google.
     - Os resultados são armazenados no Firestore, com metadados que incluem o intervalo de datas da coleta.
+  - **Dados Contínuos (Busca Agendada)**:
+    - Endpoint: `POST /monitor/run/continuous`
+    - Projetado para ser acionado por um serviço de agendamento (ex: Google Cloud Scheduler), executando uma ou mais vezes ao dia.
+    - Realiza buscas para "Marca" e "Concorrentes" utilizando o parâmetro `dateRestrict=d1` para obter resultados das últimas 24 horas.
+    - Pagina até um máximo de 10 páginas por grupo de termos, respeitando a cota diária de requisições.
+    - Verifica duplicatas de URLs antes de salvar novos resultados no Firestore.
+    - Cria um log detalhado de cada requisição no Firestore para fins de auditoria e depuração.
   - **Controle de Cota**:
-    - Implementa um contador global que limita o total de requisições à API do Google a 100 por dia, somando as buscas de dados do agora e do passado.
-    - Caso a cota diária seja atingida durante uma coleta histórica, o processo é interrompido e a data da interrupção é salva, permitindo a continuação futura.
+    - Implementa um contador global que limita o total de requisições à API do Google a 100 por dia, somando todos os tipos de busca.
+    - Caso a cota diária seja atingida, o processo de coleta é interrompido.
   - **Gerenciamento de Duplicatas**:
-    - Utiliza um hash da URL como ID do documento no Firestore para evitar o armazenamento de links duplicados.
+    - Utiliza um hash da URL como ID do documento no Firestore para evitar o armazenamento de links duplicados em todas as coletas.
