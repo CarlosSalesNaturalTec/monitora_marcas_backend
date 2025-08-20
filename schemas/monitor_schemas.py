@@ -19,12 +19,12 @@ class MonitorRun(BaseModel):
     id: Optional[str] = None
     search_terms_query: str
     search_group: str  # 'brand' ou 'competitors'
-    search_type: Literal["relevante", "historico"] = "relevante"
+    search_type: Literal["relevante", "historico", "continuo"] = "relevante"
     total_results_found: int
     collected_at: datetime = Field(default_factory=datetime.utcnow)
-    range_start: Optional[date] = None
-    range_end: Optional[date] = None
-    last_interruption_date: Optional[date] = None
+    range_start: Optional[datetime] = None
+    range_end: Optional[datetime] = None
+    last_interruption_date: Optional[datetime] = None
 
 class MonitorData(BaseModel):
     run_metadata: MonitorRun
@@ -40,3 +40,13 @@ class HistoricalRunRequest(BaseModel):
 class HistoricalMonitorData(BaseModel):
     brand: List[MonitorData] = Field(default_factory=list)
     competitors: List[MonitorData] = Field(default_factory=list)
+
+class MonitorLog(BaseModel):
+    run_id: str
+    search_group: str
+    page: int
+    results_count: int
+    new_urls_saved: int
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    range_start: Optional[datetime] = None
+    range_end: Optional[datetime] = None

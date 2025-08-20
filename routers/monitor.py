@@ -10,7 +10,7 @@ from firebase_admin import firestore
 from schemas.term_schemas import SearchTerms, TermGroup
 from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
-    HistoricalRunRequest, HistoricalMonitorData
+    HistoricalRunRequest, HistoricalMonitorData, MonitorLog
 )
 from auth import get_current_user
 from firebase_admin_init import db
@@ -44,6 +44,140 @@ def _increment_quota(requests_made: int):
     if requests_made > 0:
         doc_ref = _get_daily_quota_doc_ref()
         doc_ref.set({"count": firestore.Increment(requests_made)}, merge=True)
+
+# --- Helpers for Continuous Monitoring ---
+
+def _get_platform_search_terms() -> SearchTerms:
+    """Busca os termos de pesquisa da plataforma diretamente do Firestore."""
+    try:
+        doc_ref = db.collection("platform_config").document("search_terms")
+        doc = doc_ref.get()
+        if doc.exists:
+            return SearchTerms(**doc.to_dict())
+        return SearchTerms()
+    except Exception as e:
+        print(f"CRITICAL: Erro ao buscar os termos de pesquisa: {e}")
+        return SearchTerms()
+
+def _log_request(run_id: str, search_group: str, page: int, results_count: int, new_urls_saved: int):
+    """Salva um log de uma única requisição da API do Google."""
+    try:
+        log_ref = db.collection("monitor_logs").document()
+        
+        today = date.today()
+        start_of_day = datetime.combine(today, datetime.min.time())
+
+        log_data = MonitorLog(
+            run_id=run_id,
+            search_group=search_group,
+            page=page,
+            results_count=results_count,
+            new_urls_saved=new_urls_saved,
+            range_start=start_of_day,
+            range_end=start_of_day,
+        )
+        
+        log_ref.set(log_data.dict())
+    except Exception as e:
+        print(f"Error logging request for run_id {run_id}: {e}")
+
+# --- Continuous Monitoring Endpoint ---
+
+@router.post("/monitor/run/continuous", status_code=status.HTTP_200_OK, tags=["Monitor"])
+def run_continuous_monitoring():
+    """
+    Inicia uma execução de monitoramento contínuo (últimas 24h).
+    Projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    cse_id = os.getenv("GOOGLE_CSE_ID")
+    
+    if not api_key or not cse_id:
+        print("CRITICAL: As credenciais da API do Google não estão configuradas.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Credenciais da API do Google não configuradas."
+        )
+
+    search_terms = _get_platform_search_terms()
+    total_new_urls_all_groups = 0
+    
+    for group_name in ["brand", "competitors"]:
+        term_group: TermGroup = getattr(search_terms, group_name)
+        query_string = _build_query_string(term_group)
+
+        if not query_string.strip():
+            continue
+
+        run_id = db.collection("monitor_runs").document().id
+        total_new_urls_for_group = 0
+        
+        for page in range(10): # Paginação até 10 páginas
+            if _get_remaining_quota() <= 0:
+                print("INFO: Cota diária de requisições atingida.")
+                break
+
+            start_index = 1 + page * 10
+            
+            try:
+                url = "https://www.googleapis.com/customsearch/v1"
+                params = {
+                    "key": api_key, "cx": cse_id, "q": query_string,
+                    "num": 10, "start": start_index, "dateRestrict": "d1"
+                }
+                response = requests.get(url, params=params)
+                _increment_quota(1)
+                response.raise_for_status()
+                search_results = response.json()
+                
+                items_raw = search_results.get("items", [])
+                
+                if not items_raw:
+                    _log_request(run_id, group_name, page + 1, 0, 0)
+                    break
+
+                results_page = [MonitorResultItem(**item) for item in items_raw if item.get("link")]
+                doc_refs = [db.collection("monitor_results").document(item.generate_id()) for item in results_page]
+                
+                existing_docs = db.get_all(doc_refs)
+                existing_ids = {doc.id for doc in existing_docs if doc.exists}
+
+                new_items_to_save = [item for item in results_page if item.generate_id() not in existing_ids]
+
+                if new_items_to_save:
+                    batch = db.batch()
+                    for item in new_items_to_save:
+                        doc_ref = db.collection("monitor_results").document(item.generate_id())
+                        item_dict = item.dict()
+                        item_dict["run_id"] = run_id
+                        batch.set(doc_ref, item_dict)
+                    batch.commit()
+                
+                new_urls_saved_count = len(new_items_to_save)
+                total_new_urls_for_group += new_urls_saved_count
+                
+                _log_request(run_id, group_name, page + 1, len(items_raw), new_urls_saved_count)
+
+            except requests.exceptions.RequestException as e:
+                print(f"ERROR: Falha na requisição para o Google (página {page + 1}, grupo {group_name}): {e}")
+                break
+
+        today = date.today()
+        start_of_day = datetime.combine(today, datetime.min.time())
+        run_metadata = MonitorRun(
+            id=run_id,
+            search_terms_query=query_string,
+            search_group=group_name,
+            search_type="continuo",
+            total_results_found=total_new_urls_for_group,
+            range_start=start_of_day,
+            range_end=start_of_day
+        )
+        
+        db.collection("monitor_runs").document(run_id).set(run_metadata.dict())
+        total_new_urls_all_groups += total_new_urls_for_group
+
+    return {"message": f"Coleta contínua concluída. Total de {total_new_urls_all_groups} novas URLs salvas."}
 
 # --- Auxiliar de Busca do Google ---
 
@@ -115,14 +249,7 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
         run_ref = db.collection("monitor_runs").document()
         run_metadata.id = run_ref.id
         
-        # Converte o modelo Pydantic para um dicionário
         run_dict = run_metadata.dict()
-        
-        # Converte objetos 'date' para 'datetime' antes de salvar
-        for key, value in run_dict.items():
-            if isinstance(value, date) and not isinstance(value, datetime):
-                run_dict[key] = datetime.combine(value, datetime.min.time())
-
         run_ref.set(run_dict)
 
         batch = db.batch()
@@ -256,13 +383,14 @@ def run_historical_monitoring(
                 MonitorResultItem(**item) for item in search_results_raw if item.get("link")
             ]
             
+            start_of_current_date = datetime.combine(current_date, datetime.min.time())
             run_metadata = MonitorRun(
                 search_terms_query=query_string,
                 search_group=group_name,
                 search_type="historico",
                 total_results_found=len(monitor_results),
-                range_start=current_date,
-                range_end=current_date
+                range_start=start_of_current_date,
+                range_end=start_of_current_date
             )
             
             run_id = _save_monitor_data(run_metadata, monitor_results)

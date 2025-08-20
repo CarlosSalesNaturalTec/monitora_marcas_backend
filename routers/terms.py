@@ -29,8 +29,6 @@ def _build_query_string(term_group: TermGroup) -> str:
     for term in term_group.excluded_terms:
         query_parts.append(f'-"{term}"')
 
-    print(" ".join(query_parts))    
-
     return " ".join(query_parts)
 
 def _perform_google_search(query: str) -> List[dict]:

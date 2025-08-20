@@ -21,11 +21,15 @@ Mantendo as funcionalidades já existentes no sistema, vamos dar continuidade ao
 
 * Ao gerar as querys, separar todos os termos principais e sinônimos com o operador OR e envolver o conjunto final de termos entre parênteses. Preceder com hífen os termos excludentes.
 
-* Armazenar no banco firestore na Coleção de controle (monitor_runs): termos da busca, se a busca refere-se à marca ou ao concorrente, tipo=contínuo, quantidade_resultados, data e hora da coleta.
+* Armazenar no banco firestore na Coleção de controle (monitor_runs): termos da busca, se a busca refere-se à marca ou ao concorrente, tipo=contínuo, quantidade_resultados, data e hora da coleta,  range_inicio e range_fim que devem ser iguais.
 
 * Verificar se Urls obtidas já foram cadastradas anteriorente utilizando o ID do documento/hash da URL de modo a evitar duplicidades de cadastro.
 
 * Para as novas URLs, armazenar em um banco firestore os seguintes dados: ID da Coleta, link, displayLink, title, pagemap, snippet e htmlsnippet. Use hash da URL como ID do documento para evitar duplicidades futuras.
+
+* Criar no firestore um log de todas as requisições realizadas contendo os dados: data e hora da requisição, Id da coleta, marca ou concorrente, página, range_inicio e range_fim, quantidade de resultados obtidos, quantidade de urls novas salvas no banco.
+
+
 
 
 # 2 - Melhorar Consulta de dados históricos
