@@ -12,7 +12,8 @@ from firebase_admin import firestore
 from schemas.term_schemas import SearchTerms, TermGroup
 from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
-    HistoricalRunRequest, HistoricalMonitorData, MonitorLog
+    HistoricalRunRequest, HistoricalMonitorData, MonitorLog, MonitorSummary, 
+    RunSummary, RequestLog
 )
 from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
@@ -364,6 +365,92 @@ def run_and_save_monitoring(current_user: dict = Depends(get_current_user)):
         )
 
     return response_data
+
+
+@router.get("/monitor/summary", response_model=MonitorSummary, tags=["Monitor"])
+def get_monitor_summary(current_user: dict = Depends(get_current_user)):
+    """
+    Busca um resumo agregado e os logs recentes das atividades de monitoramento.
+    """
+    try:
+        # 1. Fetch runs and recent logs
+        runs_ref = db.collection("monitor_runs").stream()
+        
+        all_runs = []
+        for doc in runs_ref:
+            run_data = doc.to_dict()
+            run_data['id'] = doc.id  # Prioriza o ID do documento
+            all_runs.append(MonitorRun(**run_data))
+
+        logs_ref = db.collection("monitor_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(100).stream()
+        recent_logs = [MonitorLog(**doc.to_dict()) for doc in logs_ref]
+
+        # 2. Perform efficient counts using count() aggregation
+        runs_count_query = db.collection("monitor_runs").count()
+        logs_count_query = db.collection("monitor_logs").count()
+        
+        runs_count_result = runs_count_query.get()
+        logs_count_result = logs_count_query.get()
+
+        total_runs = runs_count_result[0][0].value
+        total_requests = logs_count_result[0][0].value
+
+        # 3. Aggregate data from the in-memory runs list
+        total_results_saved = sum(run.total_results_found for run in all_runs)
+
+        runs_by_type = {"relevante": 0, "historico": 0, "continuo": 0}
+        for run in all_runs:
+            if run.search_type in runs_by_type:
+                runs_by_type[run.search_type] += 1
+
+        results_by_group = {"brand": 0, "competitors": 0}
+        for run in all_runs:
+            if run.search_group in results_by_group:
+                results_by_group[run.search_group] += run.total_results_found
+
+        # 4. Prepare latest runs and logs for the response
+        all_runs.sort(key=lambda r: r.collected_at, reverse=True)
+        latest_runs_data = all_runs[:50]
+
+        latest_runs_summary = [
+            RunSummary(
+                id=run.id,
+                search_group=run.search_group,
+                search_type=run.search_type,
+                collected_at=run.collected_at,
+                total_results_found=run.total_results_found,
+                search_terms_query=run.search_terms_query,
+                range_start=run.range_start
+            ) for run in latest_runs_data
+        ]
+
+        latest_logs_summary = [
+            RequestLog(
+                run_id=log.run_id,
+                search_group=log.search_group,
+                page=log.page,
+                results_count=log.results_count,
+                timestamp=log.timestamp
+            ) for log in recent_logs
+        ]
+
+        return MonitorSummary(
+            total_runs=total_runs,
+            total_requests=total_requests,
+            total_results_saved=total_results_saved,
+            runs_by_type=runs_by_type,
+            results_by_group=results_by_group,
+            latest_runs=latest_runs_summary,
+            latest_logs=latest_logs_summary,
+        )
+
+    except Exception as e:
+        print(f"Error fetching monitor summary: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar o resumo do monitoramento: {e}"
+        )
+
 
 @router.post("/monitor/run/historical", tags=["Monitor"])
 def run_historical_monitoring(

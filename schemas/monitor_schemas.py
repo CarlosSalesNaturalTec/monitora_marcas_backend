@@ -50,3 +50,34 @@ class MonitorLog(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
+
+
+# --- Schemas for Summary View ---
+
+class RunSummary(BaseModel):
+    """Resumo de uma única execução de monitoramento."""
+    id: str
+    search_group: str
+    search_type: Literal["relevante", "historico", "continuo"]
+    collected_at: datetime
+    total_results_found: int
+    search_terms_query: str
+    range_start: Optional[datetime] = None
+
+class RequestLog(BaseModel):
+    """Representa um log de requisição individual."""
+    run_id: str
+    search_group: str
+    page: int
+    results_count: int
+    timestamp: datetime
+
+class MonitorSummary(BaseModel):
+    """Agrega todos os dados de resumo e logs para o dashboard."""
+    total_runs: int
+    total_requests: int
+    total_results_saved: int
+    runs_by_type: dict[str, int]
+    results_by_group: dict[str, int]
+    latest_runs: List[RunSummary] = Field(default_factory=list)
+    latest_logs: List[RequestLog] = Field(default_factory=list)

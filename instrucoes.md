@@ -1,8 +1,8 @@
 ok - 1 - Implementar endpoint para dados continuios
 ok - 2 - Melhorar Consulta de dados históricos
-3 - Implementar endpoint para Dados Históricos - continuação
-4 - Unificar pesquisas : agora e histórico
 5 - Criar resumo 
+4 - Unificar pesquisas : agora e histórico
+3 - Implementar endpoint para Dados Históricos - continuação
 6 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
 # Implementar endpoint para dados continuios
@@ -44,6 +44,18 @@ Verificar se pode melhorar os seguintes itens:
 
 4 - Adicionar, nas consultas de dados Relevantes e Dados históricos, log detalhado de cada requisição no Firestore para fins de auditoria e depuração, semelhante ao implementado na consulta de dados continuos.
 
+# 5 - Criar resumo do Coleta realizada até o momento
+
+
+Criar resumo com:  data, tipo de contulta realizada (relevante, histórica ou recorrente), quantidade de resultados encontrados para marca e concorrente
+
+# 4 - Unificar pesquisas : agora e histórico
+
+Unificar as pesquisas em um único botão. 
+Ao clicar neste botão o sistema deverá realizar de maneira sequencial as duas etapas da pesquisa: Dados do Agora e Dados Históricos.
+1 - Realizar a pesquisa de Dados do Agora (Relevante).
+2 - Ao concluir, iniciar a pesquisa por Dados do Passado (Histórico).
+3 - No decorrer da pesquisa, exibir na tela informações sobre o seu andamento: Dados do Agora ou Históricos, pesquisa de termos da Marca ou do Concorrente, data range , quantidade de resultados encontrados, página atual, quantidade total de requisições realizadas, etc.
 
 
 # 3 - Implementar endpoint para Dados Históricos - continuação
@@ -80,16 +92,9 @@ ATENÇÃO! na etapa 03 - que envolve o processo diário de coleta, verificar se 
 
 
 
-# 4 - Unificar pesquisas : agora e histórico
 
-Unificar as pesquisas em um único botão. 
-Ao clicar neste botão o sistema deverá realizar de maneira sequencial as duas etapas da pesquisa: Dados do Agora e Dados Históricos.
-1 - Realizar a pesquisa de Dados do Agora (Relevante).
-2 - Ao concluir, iniciar a pesquisa por Dados do Passado (Histórico).
-3 - No decorrer da pesquisa, exibir na tela informações sobre o seu andamento: Dados do Agora ou Históricos, pesquisa de termos da Marca ou do Concorrente, data range , quantidade de resultados encontrados, página atual, quantidade total de requisições realizadas, etc.
 
-# 5 - Criar resumo do Coleta realizada até o momento
-Criar resumo com:  data, tipo de contulta realizada (relevante, histórica ou recorrente), quantidade de resultados encontrados para marca e concorrente
+
 
 # 6 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
