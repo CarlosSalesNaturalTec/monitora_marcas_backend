@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
-from datetime import datetime
+from typing import List, Optional, Any, Literal
+from datetime import datetime, date
 import hashlib
 
 class MonitorResultItem(BaseModel):
@@ -19,9 +19,12 @@ class MonitorRun(BaseModel):
     id: Optional[str] = None
     search_terms_query: str
     search_group: str  # 'brand' ou 'competitors'
-    search_type: str = "relevante"
+    search_type: Literal["relevante", "historico"] = "relevante"
     total_results_found: int
     collected_at: datetime = Field(default_factory=datetime.utcnow)
+    range_start: Optional[date] = None
+    range_end: Optional[date] = None
+    last_interruption_date: Optional[date] = None
 
 class MonitorData(BaseModel):
     run_metadata: MonitorRun
@@ -30,3 +33,10 @@ class MonitorData(BaseModel):
 class LatestMonitorData(BaseModel):
     brand: Optional[MonitorData] = None
     competitors: Optional[MonitorData] = None
+
+class HistoricalRunRequest(BaseModel):
+    start_date: date
+
+class HistoricalMonitorData(BaseModel):
+    brand: List[MonitorData] = Field(default_factory=list)
+    competitors: List[MonitorData] = Field(default_factory=list)

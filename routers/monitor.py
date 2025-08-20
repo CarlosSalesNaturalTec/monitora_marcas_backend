@@ -1,25 +1,60 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 import requests
 import os
-from typing import List, Dict, Any
-from datetime import datetime
+from typing import List, Dict, Any, Tuple, Optional
+from datetime import datetime, date, timedelta
 import hashlib
 from google.api_core.exceptions import FailedPrecondition
 from firebase_admin import firestore
 
 from schemas.term_schemas import SearchTerms, TermGroup
-from schemas.monitor_schemas import MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData
+from schemas.monitor_schemas import (
+    MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
+    HistoricalRunRequest, HistoricalMonitorData
+)
 from auth import get_current_user
 from firebase_admin_init import db
 from routers.terms import get_search_terms, _build_query_string
 
 router = APIRouter()
 
-# --- Helper Functions ---
+# --- Constantes ---
+QUOTA_COLLECTION = "daily_quotas"
+MAX_DAILY_REQUESTS = 100
 
-def _perform_paginated_google_search(query: str) -> List[Dict[str, Any]]:
+# --- Funções Auxiliares de Cota Diária ---
+
+def _get_daily_quota_doc_ref():
+    """Retorna a referência para o documento de cota do dia atual."""
+    today_str = date.today().isoformat()
+    return db.collection(QUOTA_COLLECTION).document(today_str)
+
+def _get_remaining_quota() -> int:
+    """Lê a cota de requisições restante para o dia."""
+    doc_ref = _get_daily_quota_doc_ref()
+    snapshot = doc_ref.get()
+    if not snapshot.exists:
+        return MAX_DAILY_REQUESTS
+    
+    count = snapshot.get("count")
+    return max(0, MAX_DAILY_REQUESTS - count)
+
+def _increment_quota(requests_made: int):
+    """Incrementa a contagem diária de requisições."""
+    if requests_made > 0:
+        doc_ref = _get_daily_quota_doc_ref()
+        doc_ref.set({"count": firestore.Increment(requests_made)}, merge=True)
+
+# --- Auxiliar de Busca do Google ---
+
+def _perform_paginated_google_search(
+    query: str, 
+    pages_to_fetch: int,
+    date_range: Optional[Dict[str, date]] = None
+) -> Tuple[List[Dict[str, Any]], int]:
     """
-    Executa a busca paginada na API do Google CSE, até um máximo de 10 páginas.
+    Executa uma busca paginada na API do Google CSE e retorna os resultados
+    junto com o número de requisições feitas.
     """
     api_key = os.getenv("GOOGLE_API_KEY")
     cse_id = os.getenv("GOOGLE_CSE_ID")
@@ -30,15 +65,14 @@ def _perform_paginated_google_search(query: str) -> List[Dict[str, Any]]:
             detail="As credenciais da API do Google (API Key e CSE ID) não estão configuradas."
         )
         
-    if not query.strip():
-        return []
+    if not query.strip() or pages_to_fetch <= 0:
+        return [], 0
 
     url = "https://www.googleapis.com/customsearch/v1"
     all_items = []
+    requests_made = 0
     
-    # O Google CSE permite até 100 resultados, 10 por página.
-    # O parâmetro 'start' indica o índice do primeiro resultado (1, 11, 21, ...).
-    for page in range(10):
+    for page in range(pages_to_fetch):
         start_index = 1 + page * 10
         params = {
             "key": api_key,
@@ -48,39 +82,49 @@ def _perform_paginated_google_search(query: str) -> List[Dict[str, Any]]:
             "start": start_index,
         }
         
+        if date_range and date_range.get("start") and date_range.get("end"):
+            start_str = date_range["start"].strftime("%Y%m%d")
+            end_str = date_range["end"].strftime("%Y%m%d")
+            params["sort"] = f"date:r:{start_str}:{end_str}"
+        
         try:
             response = requests.get(url, params=params)
+            requests_made += 1
             response.raise_for_status()
             search_results = response.json()
             
             items = search_results.get("items", [])
             if not items:
-                # Interrompe a paginação se não houver mais resultados
                 break
             
             all_items.extend(items)
 
         except requests.exceptions.RequestException as e:
-            # Em caso de erro em uma das páginas, podemos decidir parar ou continuar.
-            # Por simplicidade, paramos e lançamos uma exceção.
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Erro ao comunicar com a API do Google na página {page + 1}: {e}"
+                detail=f"Erro ao se comunicar com a API do Google na página {page + 1}: {e}"
             )
             
-    return all_items
+    return all_items, requests_made
+
+# --- Auxiliar para Salvar Dados no Firestore ---
 
 def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem]) -> str:
-    """
-    Salva os metadados da execução e os resultados da busca no Firestore.
-    """
+    """Salva os metadados da execução e os resultados da busca no Firestore."""
     try:
-        # 1. Salva os metadados da execução para obter um ID
         run_ref = db.collection("monitor_runs").document()
         run_metadata.id = run_ref.id
-        run_ref.set(run_metadata.dict())
+        
+        # Converte o modelo Pydantic para um dicionário
+        run_dict = run_metadata.dict()
+        
+        # Converte objetos 'date' para 'datetime' antes de salvar
+        for key, value in run_dict.items():
+            if isinstance(value, date) and not isinstance(value, datetime):
+                run_dict[key] = datetime.combine(value, datetime.min.time())
 
-        # 2. Salva cada resultado individualmente, usando o hash do link como ID do documento
+        run_ref.set(run_dict)
+
         batch = db.batch()
         results_collection_ref = db.collection("monitor_results")
         
@@ -88,10 +132,8 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
             doc_id = item_data.generate_id()
             doc_ref = results_collection_ref.document(doc_id)
             
-            # Adiciona o ID da execução (run) ao resultado antes de salvar
             result_with_run_id = item_data.dict()
             result_with_run_id["run_id"] = run_ref.id
-            
             batch.set(doc_ref, result_with_run_id)
         
         batch.commit()
@@ -100,76 +142,157 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao salvar dados de monitoramento no Firestore: {e}"
+            detail=f"Erro ao salvar os dados de monitoramento no Firestore: {e}"
         )
 
-# --- API Endpoints ---
+# --- Endpoints da API ---
 
 @router.post("/monitor/run", response_model=Dict[str, MonitorData], tags=["Monitor"])
 def run_and_save_monitoring(current_user: dict = Depends(get_current_user)):
     """
-    Inicia uma nova execução de monitoramento para 'brand' e 'competitors'.
-    Busca os termos, realiza a pesquisa paginada no Google e salva os resultados no Firestore.
+    Inicia uma nova execução de monitoramento 'relevante' para 'brand' e 'competitors'.
+    Esta é a funcionalidade "Dados do Agora".
     """
-    # 1. Obter os termos de pesquisa mais recentes
     search_terms: SearchTerms = get_search_terms(current_user)
-    
     response_data = {}
+    total_requests_made = 0
 
     for group_name in ["brand", "competitors"]:
+        remaining_quota = _get_remaining_quota()
+        if remaining_quota == 0:
+            break
+
+        pages_to_fetch = min(10, remaining_quota)
+        
         term_group: TermGroup = getattr(search_terms, group_name)
         query_string = _build_query_string(term_group)
         
         if not query_string.strip():
             continue
 
-        # 2. Realizar a busca paginada
-        search_results_raw = _perform_paginated_google_search(query_string)
+        search_results_raw, requests_made = _perform_paginated_google_search(query_string, pages_to_fetch)
+        _increment_quota(requests_made)
+        total_requests_made += requests_made
         
-        # 3. Mapear os resultados para o schema Pydantic
         monitor_results = [
-            MonitorResultItem(
-                link=item.get("link", ""),
-                displayLink=item.get("displayLink", ""),
-                title=item.get("title", ""),
-                snippet=item.get("snippet", ""),
-                htmlSnippet=item.get("htmlSnippet", ""),
-                pagemap=item.get("pagemap", {})
-            )
-            for item in search_results_raw if item.get("link")
+            MonitorResultItem(**item) for item in search_results_raw if item.get("link")
         ]
         
-        # 4. Criar os metadados da execução
         run_metadata = MonitorRun(
             search_terms_query=query_string,
             search_group=group_name,
+            search_type="relevante",
             total_results_found=len(monitor_results)
         )
         
-        # 5. Salvar tudo no Firestore
         run_id = _save_monitor_data(run_metadata, monitor_results)
-        run_metadata.id = run_id # Adiciona o ID gerado ao objeto de metadados
+        run_metadata.id = run_id
         
-        # 6. Montar a resposta
         response_data[group_name] = MonitorData(
             run_metadata=run_metadata,
             results=monitor_results
         )
-        
+    
+    if total_requests_made == 0:
+         raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Cota diária de requisições da API do Google excedida. Nenhum novo dado foi coletado."
+        )
+
     return response_data
+
+@router.post("/monitor/run/historical", tags=["Monitor"])
+def run_historical_monitoring(
+    request: HistoricalRunRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Inicia um preenchimento de dados históricos a partir de uma data de início.
+    """
+    search_terms: SearchTerms = get_search_terms(current_user)
+    
+    start_date = request.start_date
+    end_date = date.today() - timedelta(days=1)
+    
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A data de início não pode ser no futuro ou hoje."
+        )
+
+    current_date = start_date
+    last_saved_run_id = None
+    interrupted = False
+
+    while current_date <= end_date:
+        if interrupted:
+            break
+
+        for group_name in ["brand", "competitors"]:
+            remaining_quota = _get_remaining_quota()
+            if remaining_quota == 0:
+                interrupted = True
+                break
+
+            pages_to_fetch = min(10, remaining_quota)
+            
+            term_group: TermGroup = getattr(search_terms, group_name)
+            query_string = _build_query_string(term_group)
+
+            if not query_string.strip():
+                continue
+
+            date_range = {"start": current_date, "end": current_date}
+            
+            search_results_raw, requests_made = _perform_paginated_google_search(
+                query_string, pages_to_fetch, date_range
+            )
+            _increment_quota(requests_made)
+
+            if not search_results_raw:
+                continue
+
+            monitor_results = [
+                MonitorResultItem(**item) for item in search_results_raw if item.get("link")
+            ]
+            
+            run_metadata = MonitorRun(
+                search_terms_query=query_string,
+                search_group=group_name,
+                search_type="historico",
+                total_results_found=len(monitor_results),
+                range_start=current_date,
+                range_end=current_date
+            )
+            
+            run_id = _save_monitor_data(run_metadata, monitor_results)
+            last_saved_run_id = run_id
+
+        if not interrupted:
+            current_date += timedelta(days=1)
+
+    if interrupted and last_saved_run_id:
+        interruption_datetime = datetime.combine(current_date, datetime.min.time())
+        db.collection("monitor_runs").document(last_saved_run_id).update({
+            "last_interruption_date": interruption_datetime
+        })
+        return {"message": f"Coleta histórica parcial concluída. Limite de requisições atingido. Você pode continuar a partir de {current_date.isoformat()} mais tarde."}
+
+    return {"message": "Coleta histórica concluída com sucesso."}
+
 
 @router.get("/monitor/latest", response_model=LatestMonitorData, tags=["Monitor"])
 def get_latest_monitor_data(current_user: dict = Depends(get_current_user)):
     """
-    Busca a última execução de monitoramento para 'brand' e 'competitors' e seus resultados.
+    Busca a última execução de monitoramento 'relevante' para 'brand' e 'competitors'.
     """
     latest_data = LatestMonitorData()
 
     for group_name in ["brand", "competitors"]:
         try:
-            # 1. Encontra a última execução para o grupo especificado
             runs_query = db.collection("monitor_runs") \
                 .where("search_group", "==", group_name) \
+                .where("search_type", "==", "relevante") \
                 .order_by("collected_at", direction=firestore.Query.DESCENDING) \
                 .limit(1)
             
@@ -180,52 +303,100 @@ def get_latest_monitor_data(current_user: dict = Depends(get_current_user)):
 
             latest_run_doc = run_docs[0]
             run_data = latest_run_doc.to_dict()
-            run_data['id'] = latest_run_doc.id  # Garante que o ID do documento seja a fonte da verdade
+            run_data['id'] = latest_run_doc.id
             latest_run_data = MonitorRun(**run_data)
             
-            # 2. Busca os resultados associados a essa execução
-            results_query = db.collection("monitor_results") \
-                .where("run_id", "==", latest_run_doc.id)
-            
+            results_query = db.collection("monitor_results").where("run_id", "==", latest_run_doc.id)
             result_docs = results_query.stream()
-            
             results = [MonitorResultItem(**doc.to_dict()) for doc in result_docs]
             
-            # 3. Monta o objeto de dados
             monitor_data = MonitorData(run_metadata=latest_run_data, results=results)
             setattr(latest_data, group_name, monitor_data)
 
         except FailedPrecondition as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "Erro de pré-condição no Firestore. "
-                    "Isso geralmente indica que um índice composto necessário não foi criado. "
-                    "Verifique os logs do Firebase para o link de criação do índice. "
-                    f"Detalhe do erro: {e}"
-                )
+                detail=f"Um índice do Firestore necessário está faltando. Verifique os logs do Firebase para um link de criação. Erro: {e}"
             )
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Erro ao buscar últimos dados para '{group_name}': {e}"
+                detail=f"Erro ao buscar os últimos dados para '{group_name}': {e}"
             )
             
     return latest_data
 
+@router.get("/monitor/historical", response_model=HistoricalMonitorData, tags=["Monitor"])
+def get_historical_monitor_data(current_user: dict = Depends(get_current_user)):
+    """
+    Busca todas as execuções de monitoramento 'histórico' e seus resultados associados.
+    """
+    historical_data = HistoricalMonitorData()
+    
+    try:
+        runs_query = db.collection("monitor_runs") \
+            .where("search_type", "==", "historico") \
+            .order_by("range_start", direction=firestore.Query.ASCENDING)
+        
+        all_run_docs = list(runs_query.stream())
+        
+        if not all_run_docs:
+            return historical_data
+
+        run_ids = [doc.id for doc in all_run_docs]
+        all_results = {}
+
+        for i in range(0, len(run_ids), 30):
+            batch_ids = run_ids[i:i + 30]
+            results_query = db.collection("monitor_results").where("run_id", "in", batch_ids)
+            for doc in results_query.stream():
+                result_data = doc.to_dict()
+                run_id = result_data.get("run_id")
+                if run_id not in all_results:
+                    all_results[run_id] = []
+                all_results[run_id].append(MonitorResultItem(**result_data))
+
+        for run_doc in all_run_docs:
+            run_data_dict = run_doc.to_dict()
+            run_data_dict['id'] = run_doc.id
+            run_data = MonitorRun(**run_data_dict)
+            
+            group = run_data.search_group
+            results_for_run = all_results.get(run_doc.id, [])
+            
+            monitor_data = MonitorData(run_metadata=run_data, results=results_for_run)
+            
+            if group == "brand":
+                historical_data.brand.append(monitor_data)
+            elif group == "competitors":
+                historical_data.competitors.append(monitor_data)
+
+    except FailedPrecondition as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Um índice do Firestore necessário está faltando. Verifique os logs do Firebase para um link de criação. Erro: {e}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar dados históricos: {e}"
+        )
+            
+    return historical_data
+
+
 @router.delete("/monitor/latest", status_code=status.HTTP_200_OK, tags=["Monitor"])
 def delete_latest_monitor_data(current_user: dict = Depends(get_current_user)):
     """
-    Encontra e exclui as últimas execuções de monitoramento ('brand' e 'competitors')
-    e todos os resultados de busca associados a elas.
+    Encontra e exclui as últimas execuções de monitoramento 'relevante' e seus resultados.
     """
     runs_to_delete = []
 
     for group_name in ["brand", "competitors"]:
         try:
-            # 1. Encontra a última execução para o grupo
             runs_query = db.collection("monitor_runs") \
                 .where("search_group", "==", group_name) \
+                .where("search_type", "==", "relevante") \
                 .order_by("collected_at", direction=firestore.Query.DESCENDING) \
                 .limit(1)
             
@@ -234,28 +405,24 @@ def delete_latest_monitor_data(current_user: dict = Depends(get_current_user)):
                 runs_to_delete.append(run_docs[0])
 
         except Exception as e:
-            # Ignora erros de busca (ex: índice não existe), mas loga para debug
             print(f"Não foi possível buscar a última execução para '{group_name}': {e}")
             continue
     
     if not runs_to_delete:
-        return {"message": "Nenhuma coleta de dados para excluir."}
+        return {"message": "Nenhuma coleta de dados relevante para excluir."}
 
-    # 2. Inicia um batch para as exclusões
     batch = db.batch()
     deleted_count = 0
 
     for run_doc in runs_to_delete:
         run_id = run_doc.id
         
-        # 3. Exclui os resultados associados ao run_id
         results_query = db.collection("monitor_results").where("run_id", "==", run_id)
         result_docs = list(results_query.stream())
         
         for doc in result_docs:
             batch.delete(doc.reference)
         
-        # 4. Exclui o próprio documento da execução
         batch.delete(run_doc.reference)
         deleted_count += len(result_docs) + 1
 
@@ -265,5 +432,5 @@ def delete_latest_monitor_data(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao excluir dados no Firestore: {e}"
+            detail=f"Erro ao excluir dados do Firestore: {e}"
         )
