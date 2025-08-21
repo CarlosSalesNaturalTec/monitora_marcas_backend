@@ -721,22 +721,19 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
             if run.search_type in runs_by_type:
                 runs_by_type[run.search_type] += 1
 
-        # 5. Prepare latest runs and logs for the response
+        # 5. Find the latest search queries for brand and competitors
         all_runs.sort(key=lambda r: r.collected_at, reverse=True)
-        latest_runs_data = all_runs[:50]
+        brand_query = None
+        competitors_query = None
+        for run in all_runs:
+            if not brand_query and run.search_group == 'brand' and run.search_terms_query:
+                brand_query = run.search_terms_query
+            if not competitors_query and run.search_group == 'competitors' and run.search_terms_query:
+                competitors_query = run.search_terms_query
+            if brand_query and competitors_query:
+                break
 
-        latest_runs_summary = [
-            RunSummary(
-                id=run.id,
-                search_group=run.search_group,
-                search_type=run.search_type,
-                collected_at=run.collected_at,
-                total_results_found=run.total_results_found,
-                search_terms_query=run.search_terms_query,
-                range_start=run.range_start
-            ) for run in latest_runs_data
-        ]
-
+        # 6. Prepare logs for the response
         latest_logs_summary = [
             RequestLog(
                 run_id=log.run_id,
@@ -753,8 +750,9 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
             total_results_saved=total_results_saved,
             runs_by_type=runs_by_type,
             results_by_group=results_by_group,
-            latest_runs=latest_runs_summary,
             latest_logs=latest_logs_summary,
+            brand_search_query=brand_query,
+            competitors_search_query=competitors_query,
         )
 
     except Exception as e:
@@ -762,6 +760,33 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao buscar o resumo do monitoramento: {e}"
+        )
+
+
+@router.get("/monitor/run/{run_id}", response_model=MonitorRun, tags=["Monitor"])
+def get_monitor_run_details(run_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Busca os detalhes de uma única execução de monitoramento pelo seu ID.
+    """
+    try:
+        run_ref = db.collection("monitor_runs").document(run_id)
+        run_doc = run_ref.get()
+
+        if not run_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Execução de monitoramento não encontrada."
+            )
+        
+        run_data = run_doc.to_dict()
+        run_data['id'] = run_doc.id
+        return MonitorRun(**run_data)
+
+    except Exception as e:
+        print(f"Error fetching monitor run details for {run_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar detalhes da execução: {e}"
         )
 
 

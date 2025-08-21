@@ -80,8 +80,9 @@ class MonitorSummary(BaseModel):
     total_results_saved: int
     runs_by_type: dict[str, int]
     results_by_group: dict[str, int]
-    latest_runs: List[RunSummary] = Field(default_factory=list)
     latest_logs: List[RequestLog] = Field(default_factory=list)
+    brand_search_query: Optional[str] = None
+    competitors_search_query: Optional[str] = None
 
 class HistoricalStatusResponse(BaseModel):
     is_running: bool = False

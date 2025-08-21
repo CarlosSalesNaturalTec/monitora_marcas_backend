@@ -3,28 +3,12 @@ ok - 2 - Melhorar Consulta de dados históricos
 ok - 3 - Criar resumo 
 ok - 4 - Unificar pesquisas : agora e histórico.
 ok - 5 - Unificar a tela/tab : dados relevante + histórico + continuos
-6 - Implementar endpoint para Dados Históricos - continuação
+ok - 6 - Implementar endpoint para Dados Históricos - continuação
 7 - subir servidor
 8 - botar pra rodar
 9 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
-# 6 - Implementar endpoint para Dados Históricos - continuação
-===================
-
-A busca por dados históricos deve seguir esta ordem:  
-No frontEnd O usuário informa a data limite do passado. Exemplo: 01/01/2025.
-O usuário pressiona botão no frontend para iniciar a coleta de dados, caso o banco esteja vazio.
-O backend inicia a coleta, inicialmente pelos dados relevantes.
-Ao concluir a busca pelos dados relevantes, inicia a busca pelos dados históricos partindo de um dia anterior à busca de dados relevantes. 
-Ao concluir este dia, passa para o dia imediatamente anterior e assim segue até alcançar a data limite informada ou atingir o limite de requisições diárias estabelecido. 
-Diariamente será executada uma Schedule que acionará um endpoint que verifica se a busca por dados históricos foi concluida.
-Caso não tenha atingido a data limite estabelecida pelo usuário, continuar a busca de dados históricos usando a mesma ordem citada anteriormente e assim segue até alcançar a data limite informada ou atingir o limite de requisições diárias estabelecido. 
- 
-@backend/routers/ @backend/schemas/ @backend/firebase_admin_init.py @backend/main.py
-
-
-
-# 7 - Agendamento de consulta de dados contínuos com Cloud Scheduler
+# 9 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
 Autenticação
 Endpoints públicos → chamada direta, sem autenticação.
