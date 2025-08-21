@@ -462,14 +462,48 @@ def run_scheduled_historical_monitoring():
 
     interrupt_doc_id, last_interruption, original_start_date = _get_historical_run_status()
 
+    # Se nenhuma interrupção explícita for encontrada, o sistema verifica o progresso
+    # real para se recuperar de estados inesperados.
     if not (interrupt_doc_id and last_interruption and original_start_date):
-        return {"message": "Nenhuma coleta histórica interrompida para continuar."}
+        oldest_run_query = db.collection("monitor_runs") \
+            .where("search_type", "==", "historico") \
+            .order_by("range_start", direction=firestore.Query.ASCENDING) \
+            .limit(1)
+        
+        oldest_run_docs = list(oldest_run_query.stream())
 
-    # Limpa o marcador de interrupção para a execução atual
-    db.collection("monitor_runs").document(interrupt_doc_id).update({"last_interruption_date": None})
+        if not oldest_run_docs:
+            return {"message": "Nenhuma coleta histórica iniciada para continuar."}
+
+        oldest_run_data = oldest_run_docs[0].to_dict()
+        oldest_processed_dt = oldest_run_data.get("range_start")
+        original_start_val = oldest_run_data.get("historical_run_start_date")
+
+        if not oldest_processed_dt or not original_start_val:
+            return {"message": "Coleta histórica encontrada com dados de estado inválidos."}
+
+        oldest_processed_date = oldest_processed_dt.date()
+        
+        if isinstance(original_start_val, str):
+            original_start_date = date.fromisoformat(original_start_val)
+        elif isinstance(original_start_val, datetime):
+            original_start_date = original_start_val.date()
+        else:
+            original_start_date = original_start_val
+
+        if oldest_processed_date > original_start_date:
+            # Define a próxima data a ser processada como o dia anterior ao mais antigo já processado.
+            last_interruption = oldest_processed_date - timedelta(days=1)
+        else:
+            return {"message": "Coleta histórica já concluída."}
+
+    # Se um documento de interrupção foi encontrado, limpa o marcador.
+    if interrupt_doc_id:
+        db.collection("monitor_runs").document(interrupt_doc_id).update({"last_interruption_date": None})
 
     end_date = last_interruption
     start_date = original_start_date
+
 
     if start_date > end_date:
         return {"message": "Coleta histórica já está atualizada."}

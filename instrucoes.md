@@ -4,9 +4,9 @@ ok - 3 - Criar resumo
 ok - 4 - Unificar pesquisas : agora e histórico.
 ok - 5 - Unificar a tela/tab : dados relevante + histórico + continuos
 6 - Implementar endpoint para Dados Históricos - continuação
-7 - Agendamento de consulta de dados contínuos com Cloud Scheduler
-8 - subir servidor
-9 - botar pra rodar
+7 - subir servidor
+8 - botar pra rodar
+9 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
 # 6 - Implementar endpoint para Dados Históricos - continuação
 ===================
