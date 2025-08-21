@@ -13,7 +13,8 @@ from schemas.term_schemas import SearchTerms, TermGroup
 from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
     HistoricalRunRequest, HistoricalMonitorData, MonitorLog, MonitorSummary, 
-    RunSummary, RequestLog, UnifiedMonitorResult
+    RunSummary, RequestLog, UnifiedMonitorResult, HistoricalStatusResponse,
+    UpdateHistoricalStartDateRequest
 )
 from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
@@ -99,6 +100,44 @@ def _log_request(run_id: str, search_group: str, page: int, results_count: int, 
         log_ref.set(log_data.dict())
     except Exception as e:
         print(f"Error logging request for run_id {run_id}: {e}")
+
+def _get_historical_run_status() -> Tuple[Optional[str], Optional[date], Optional[date]]:
+    """
+    Busca o status da coleta histórica para determinar se pode ser continuada.
+    
+    Returns: 
+        Tuple[Optional[str], Optional[date], Optional[date]]: 
+        (ID do documento interrompido, data da interrupção, data de início original).
+    """
+    try:
+        interrupt_query = db.collection("monitor_runs") \
+            .where("search_type", "==", "historico") \
+            .where("last_interruption_date", "!=", None) \
+            .order_by("last_interruption_date", direction=firestore.Query.DESCENDING) \
+            .limit(1)
+        
+        interrupt_docs = list(interrupt_query.stream())
+        
+        if interrupt_docs:
+            doc = interrupt_docs[0]
+            last_interrupt_doc = doc.to_dict()
+            
+            interruption_dt = last_interrupt_doc.get("last_interruption_date")
+            original_start = last_interrupt_doc.get("historical_run_start_date")
+
+            # Converte o tipo da data se necessário
+            if isinstance(original_start, str):
+                original_start = date.fromisoformat(original_start)
+            elif isinstance(original_start, datetime):
+                original_start = original_start.date()
+
+            if interruption_dt and original_start:
+                return doc.id, interruption_dt.date(), original_start
+
+        return None, None, None
+    except Exception as e:
+        print(f"WARN: Não foi possível buscar o status da coleta histórica: {e}")
+        return None, None, None
 
 # --- Continuous Monitoring Endpoint ---
 
@@ -283,6 +322,10 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
         run_metadata.id = run_ref.id
         
         run_dict = run_metadata.dict()
+        # Garante que a data seja serializada corretamente
+        if 'historical_run_start_date' in run_dict and isinstance(run_dict['historical_run_start_date'], date):
+            run_dict['historical_run_start_date'] = run_dict['historical_run_start_date'].isoformat()
+
         run_ref.set(run_dict)
 
         if results:
@@ -310,19 +353,27 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
 # --- Endpoints da API ---
 
 @router.post("/monitor/run", response_model=Dict[str, str], tags=["Monitor"])
-def run_and_save_monitoring(
+def run_initial_monitoring(
     request: HistoricalRunRequest,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Inicia uma nova execução de monitoramento completa, executando a coleta 
-    'relevante' (agora) e depois a 'histórica' a partir da data fornecida.
-    A 'start_date' é obrigatória.
+    Inicia a primeira execução de monitoramento.
+    Executa a coleta 'relevante' e depois inicia a 'histórica' até o limite da cota.
+    A continuação é feita por um processo agendado.
     """
+    has_data = next(db.collection("monitor_runs").limit(1).stream(), None)
+    if has_data:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A coleta de dados já foi iniciada. Para recomeçar, todos os dados devem ser limpos."
+        )
+
     search_terms: SearchTerms = get_search_terms(current_user)
     session = _create_session_with_retries()
     
     # --- Etapa 1: Coleta de Dados Relevantes (do Agora) ---
+    print("INFO: Executando coleta 'relevante' pela primeira vez.")
     for group_name in ["brand", "competitors"]:
         remaining_quota = _get_remaining_quota()
         if remaining_quota == 0:
@@ -346,21 +397,18 @@ def run_and_save_monitoring(
         )
         _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
 
-    # --- Etapa 2: Coleta de Dados Históricos ---
+    # --- Etapa 2: Início da Coleta de Dados Históricos ---
     start_date = request.start_date
     end_date = date.today() - timedelta(days=1)
     
     if start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A data de início não pode ser no futuro ou hoje."
-        )
+        return {"message": "Coleta relevante concluída. Nenhuma data histórica para processar."}
 
-    current_date = start_date
+    current_date = end_date
     last_saved_run_id = None
     interrupted = False
 
-    while current_date <= end_date and not interrupted:
+    while current_date >= start_date and not interrupted:
         for group_name in ["brand", "competitors"]:
             remaining_quota = _get_remaining_quota()
             if remaining_quota == 0:
@@ -385,19 +433,214 @@ def run_and_save_monitoring(
                 search_type="historico",
                 total_results_found=len(monitor_results),
                 range_start=start_of_current_date,
-                range_end=start_of_current_date
+                range_end=start_of_current_date,
+                historical_run_start_date=start_date
             )
             _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
             last_saved_run_id = run_id
         if not interrupted:
-            current_date += timedelta(days=1)
+            current_date -= timedelta(days=1)
 
     if interrupted and last_saved_run_id:
         interruption_datetime = datetime.combine(current_date, datetime.min.time())
-        db.collection("monitor_runs").document(last_saved_run_id).update({"last_interruption_date": interruption_datetime})
-        return {"message": f"Coleta concluída parcialmente. Limite de requisições atingido. Você pode continuar a partir de {current_date.isoformat()} mais tarde."}
+        db.collection("monitor_runs").document(last_saved_run_id).update({
+            "last_interruption_date": interruption_datetime
+        })
+        return {"message": f"Coleta inicial concluída parcialmente. O restante será processado automaticamente em segundo plano."}
 
-    return {"message": "Coleta completa (relevante e histórica) concluída com sucesso."}
+    return {"message": "Coleta inicial completa concluída com sucesso."}
+
+
+@router.post("/monitor/run/historical-scheduled", status_code=status.HTTP_200_OK, tags=["Monitor"])
+def run_scheduled_historical_monitoring():
+    """
+    Continua a execução da coleta de dados históricos.
+    Projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
+    """
+    search_terms: SearchTerms = _get_platform_search_terms()
+    session = _create_session_with_retries()
+
+    interrupt_doc_id, last_interruption, original_start_date = _get_historical_run_status()
+
+    if not (interrupt_doc_id and last_interruption and original_start_date):
+        return {"message": "Nenhuma coleta histórica interrompida para continuar."}
+
+    # Limpa o marcador de interrupção para a execução atual
+    db.collection("monitor_runs").document(interrupt_doc_id).update({"last_interruption_date": None})
+
+    end_date = last_interruption
+    start_date = original_start_date
+
+    if start_date > end_date:
+        return {"message": "Coleta histórica já está atualizada."}
+
+    current_date = end_date
+    last_saved_run_id = None
+    interrupted = False
+
+    while current_date >= start_date and not interrupted:
+        for group_name in ["brand", "competitors"]:
+            remaining_quota = _get_remaining_quota()
+            if remaining_quota == 0:
+                interrupted = True
+                break
+            pages_to_fetch = min(10, remaining_quota)
+            term_group: TermGroup = getattr(search_terms, group_name)
+            query_string = _build_query_string(term_group)
+            date_range = {"start": current_date, "end": current_date}
+            run_id = db.collection("monitor_runs").document().id
+            search_results_raw = []
+            if query_string.strip():
+                search_results_raw, requests_made = _perform_paginated_google_search(
+                    session, query_string, pages_to_fetch, run_id, group_name, date_range
+                )
+                _increment_quota(requests_made)
+            
+            monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
+            start_of_current_date = datetime.combine(current_date, datetime.min.time())
+            
+            run_metadata = MonitorRun(
+                search_terms_query=query_string,
+                search_group=group_name,
+                search_type="historico",
+                total_results_found=len(monitor_results),
+                range_start=start_of_current_date,
+                range_end=start_of_current_date,
+                historical_run_start_date=original_start_date
+            )
+            _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
+            last_saved_run_id = run_id
+        
+        if not interrupted:
+            current_date -= timedelta(days=1)
+
+    if interrupted and last_saved_run_id:
+        interruption_datetime = datetime.combine(current_date, datetime.min.time())
+        db.collection("monitor_runs").document(last_saved_run_id).update({
+            "last_interruption_date": interruption_datetime
+        })
+        return {"message": f"Coleta agendada concluída parcialmente. Limite de requisições atingido. Próxima execução continuará de {current_date.isoformat()}."}
+
+    return {"message": "Coleta histórica agendada concluída com sucesso."}
+
+
+@router.get("/monitor/historical-status", response_model=HistoricalStatusResponse, tags=["Monitor"])
+def get_historical_collection_status(current_user: dict = Depends(get_current_user)):
+    """
+    Verifica o status da coleta de dados históricos.
+    """
+    # 1. Check for an active interruption (means it's paused mid-day)
+    _, last_interruption, original_start_from_interrupt = _get_historical_run_status()
+
+    if last_interruption and original_start_from_interrupt:
+        last_processed = last_interruption + timedelta(days=1)
+        return HistoricalStatusResponse(
+            is_running=True,
+            last_processed_date=last_processed,
+            original_start_date=original_start_from_interrupt,
+            message=f"Busca histórica em andamento, pausada por limite de requisições. O sistema continuará a busca a partir de {last_interruption.strftime('%d/%m/%Y')}."
+        )
+
+    # 2. If no interruption, check the overall progress
+    # Find the earliest date processed by a historical run
+    oldest_run_query = db.collection("monitor_runs") \
+        .where("search_type", "==", "historico") \
+        .order_by("range_start", direction=firestore.Query.ASCENDING) \
+        .limit(1)
+    
+    oldest_run_docs = list(oldest_run_query.stream())
+
+    if not oldest_run_docs:
+        # No historical runs found at all
+        return HistoricalStatusResponse(message="A coleta de dados históricos ainda não foi iniciada.")
+
+    # We have historical runs, let's check their status
+    oldest_run_data = oldest_run_docs[0].to_dict()
+    
+    oldest_processed_date_dt = oldest_run_data.get("range_start")
+    if not oldest_processed_date_dt:
+         return HistoricalStatusResponse(message="Erro: registro histórico encontrado sem data de início.")
+
+    oldest_processed_date = oldest_processed_date_dt.date()
+
+    original_start_date_val = oldest_run_data.get("historical_run_start_date")
+    if not original_start_date_val:
+        return HistoricalStatusResponse(message="Erro: registro histórico encontrado sem data de início original.")
+
+    if isinstance(original_start_date_val, str):
+        original_start_date = date.fromisoformat(original_start_date_val)
+    elif isinstance(original_start_date_val, datetime):
+        original_start_date = original_start_date_val.date()
+    else:
+        original_start_date = original_start_date_val
+
+    # 3. Compare the oldest processed date with the target start date
+    if oldest_processed_date <= original_start_date:
+        # We've reached the target date, so it's complete
+        return HistoricalStatusResponse(
+            is_running=False,
+            last_processed_date=oldest_processed_date,
+            original_start_date=original_start_date,
+            message="A busca por dados históricos foi concluída."
+        )
+    else:
+        # It's still running, waiting for the next scheduled execution
+        return HistoricalStatusResponse(
+            is_running=True,
+            last_processed_date=oldest_processed_date,
+            original_start_date=original_start_date,
+            message=f"Busca histórica em andamento. O processo é executado diariamente até atingir a data limite. Último dia processado: {oldest_processed_date.strftime('%d/%m/%Y')}."
+        )
+
+
+
+@router.post("/monitor/update-historical-start-date", status_code=status.HTTP_200_OK, tags=["Monitor"])
+def update_historical_start_date(
+    request: UpdateHistoricalStartDateRequest,
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Atualiza a data de início da busca histórica e reinicia o processo de coleta
+    para a nova data. (Acesso restrito a administradores)
+    """
+    try:
+        historical_runs_query = db.collection("monitor_runs").where("search_type", "==", "historico").stream()
+        
+        run_docs = list(historical_runs_query)
+        if not run_docs:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nenhuma coleta histórica encontrada para atualizar.")
+
+        # Batch update all historical runs with the new start date
+        batch = db.batch()
+        latest_run_doc = None
+        latest_run_ts = datetime.min.replace(tzinfo=None)
+
+        for doc in run_docs:
+            run_data = doc.to_dict()
+            # Firestore timestamps can be timezone-aware, ensure comparison is consistent
+            collected_at_ts = run_data['collected_at'].replace(tzinfo=None)
+
+            batch.update(doc.reference, {"historical_run_start_date": request.new_start_date.isoformat()})
+            
+            if collected_at_ts > latest_run_ts:
+                latest_run_ts = collected_at_ts
+                latest_run_doc = doc
+
+        # Set the latest run to be interrupted to restart the scheduler
+        if latest_run_doc:
+            # Interruption date should be yesterday to have the scheduler pick it up and search backwards
+            interruption_date = datetime.combine(date.today() - timedelta(days=1), datetime.min.time())
+            batch.update(latest_run_doc.reference, {"last_interruption_date": interruption_date})
+
+        batch.commit()        
+        return {"message": f"Data de início da busca histórica atualizada para {request.new_start_date.isoformat()}. A coleta será reiniciada."}
+
+    except Exception as e:
+        print(f"Error updating historical start date: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao atualizar a data de início histórica: {e}"
+        )
 
 
 @router.get("/monitor/summary", response_model=MonitorSummary, tags=["Monitor"])
@@ -556,6 +799,7 @@ def _delete_collection_in_batches(collection_ref, batch_size: int) -> int:
         total_deleted += len(docs)
     
     return total_deleted
+
 
 @router.delete("/monitor/all-data", status_code=status.HTTP_200_OK, tags=["Monitor"])
 def delete_all_monitor_data(current_user: dict = Depends(get_current_admin_user)):

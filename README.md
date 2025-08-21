@@ -111,16 +111,23 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - O acesso para edição é restrito a usuários com a permissão `ADM`. Usuários não-administradores visualizam os termos em modo somente leitura.
   - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
 
-- **Sistema/Monitorar (rota `/monitor`)**: Ferramenta central para a execução e análise das coletas de dados. A interface foi reestruturada para maior clareza e eficiência:
-  - **Aba de Resumo e Logs**: Apresenta uma visão geral de todas as atividades de monitoramento. Inclui estatísticas agregadas (total de coletas, requisições, resultados) e tabelas com as últimas coletas realizadas e os logs de requisição mais recentes, permitindo um acompanhamento detalhado do processo.
-  - **Aba de Dados**: Exibe uma tabela unificada com **todos** os resultados coletados (relevantes, históricos e contínuos), ordenados do mais recente para o mais antigo. Cada linha mostra a URL, o tipo de coleta, a data do evento e o snippet de texto, fornecendo uma visão consolidada de todas as menções encontradas.
-  - **Aba de Coletas**: Centraliza todas as ações de coleta de dados.
-    - **Coleta Completa**: Unifica as buscas "do agora" e "histórica". O usuário informa uma data de início, e o sistema executa um processo sequencial: primeiro, busca os resultados mais recentes (relevantes) e, em seguida, preenche os dados históricos desde a data informada. A interface exibe o andamento do processo.
-    - **Gerenciamento de Dados**: Permite que administradores limpem todos os dados de monitoramento para reiniciar o ciclo de coletas.
-  - **Coleta Contínua (Agendada)**:
-    - Endpoint (`POST /monitor/run/continuous`) projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
-    - Realiza buscas diárias para capturar menções das últimas 24 horas, garantindo que o monitoramento seja constante.
-  - **Lógica de Coleta e Armazenamento**:
-    - Todas as coletas (relevantes, históricas e contínuas) registram logs detalhados de cada requisição à API do Google.
-    - O sistema utiliza um hash da URL como ID do documento no Firestore para evitar duplicatas e garantir a integridade dos dados.
-    - O controle de cota diária (100 requisições) é compartilhado entre todos os tipos de coleta para evitar exceder os limites da API.
+- **Sistema/Monitorar (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados. O fluxo foi unificado para simplificar o processo e garantir a cobertura completa dos dados.
+  - **Coleta Inicial (Endpoint: `POST /monitor/run`)**:
+    - Este é o ponto de partida do monitoramento. O usuário fornece uma **data de início** para a busca histórica.
+    - O processo é executado em duas etapas sequenciais:
+      1.  **Busca Relevante**: O sistema primeiro realiza uma busca pelos dados mais recentes para popular a plataforma com informações atuais.
+      2.  **Início da Busca Histórica**: Imediatamente após, o sistema começa a busca retroativa, dia a dia, partindo de "ontem" e avançando para o passado até atingir a `data de início` definida pelo usuário.
+    - Este processo é projetado para ser contínuo. Se a cota diária de requisições à API do Google for atingida, a busca é pausada e retomada automaticamente no dia seguinte.
+  - **Coleta Contínua (Endpoint: `POST /monitor/run/continuous`)**:
+    - Projetado para ser acionado por um serviço de agendamento (ex: Google Cloud Scheduler) uma ou mais vezes ao dia.
+    - Garante que, após a coleta inicial, o sistema continue capturando menções das últimas 24 horas, mantendo os dados sempre atualizados.
+  - **Coleta Histórica Agendada (Endpoint: `POST /monitor/run/historical-scheduled`)**:
+    - Também acionado por um scheduler, este endpoint é o mecanismo que garante a continuidade da busca histórica.
+    - Ele verifica se a coleta histórica foi interrompida por falta de cota e, caso positivo, a retoma do ponto onde parou.
+  - **Gerenciamento e Status**:
+    - **Status da Coleta (`GET /monitor/historical-status`)**: Fornece o estado atual da busca histórica, informando se ela está em andamento, pausada por cota ou concluída.
+    - **Atualização da Data Histórica (`POST /monitor/update-historical-start-date`)**: Permite que administradores alterem a data de início da busca histórica, reiniciando o processo de coleta para a nova data.
+    - **Limpeza de Dados (`DELETE /monitor/all-data`)**: Endpoint para administradores que apaga todos os dados de monitoramento (coletas, resultados e logs), permitindo um recomeço do zero.
+  - **Controle de Cota e Duplicatas**:
+    - Um contador global limita o total de requisições à API do Google a 100 por dia, somando todos os tipos de busca.
+    - O sistema utiliza um hash da URL como ID do documento no Firestore para evitar o armazenamento de links duplicados.

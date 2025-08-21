@@ -25,6 +25,7 @@ class MonitorRun(BaseModel):
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
     last_interruption_date: Optional[datetime] = None
+    historical_run_start_date: Optional[date] = None
 
 class MonitorData(BaseModel):
     run_metadata: MonitorRun
@@ -81,6 +82,15 @@ class MonitorSummary(BaseModel):
     results_by_group: dict[str, int]
     latest_runs: List[RunSummary] = Field(default_factory=list)
     latest_logs: List[RequestLog] = Field(default_factory=list)
+
+class HistoricalStatusResponse(BaseModel):
+    is_running: bool = False
+    last_processed_date: Optional[date] = None
+    original_start_date: Optional[date] = None
+    message: str
+
+class UpdateHistoricalStartDateRequest(BaseModel):
+    new_start_date: date
 
 # --- Schemas for Unified Data View ---
 
