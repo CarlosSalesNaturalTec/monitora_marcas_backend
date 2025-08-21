@@ -1,7 +1,8 @@
 ok - 1 - Implementar endpoint para dados continuios
 ok - 2 - Melhorar Consulta de dados históricos
-5 - Criar resumo 
-4 - Unificar pesquisas : agora e histórico
+ok - 5 - Criar resumo 
+4 - Unificar pesquisas : agora e histórico.
+Unificar a tela/tab : dados relevante + histórico + continuos
 3 - Implementar endpoint para Dados Históricos - continuação
 6 - Agendamento de consulta de dados contínuos com Cloud Scheduler
 
@@ -45,8 +46,6 @@ Verificar se pode melhorar os seguintes itens:
 4 - Adicionar, nas consultas de dados Relevantes e Dados históricos, log detalhado de cada requisição no Firestore para fins de auditoria e depuração, semelhante ao implementado na consulta de dados continuos.
 
 # 5 - Criar resumo do Coleta realizada até o momento
-
-
 Criar resumo com:  data, tipo de contulta realizada (relevante, histórica ou recorrente), quantidade de resultados encontrados para marca e concorrente
 
 # 4 - Unificar pesquisas : agora e histórico

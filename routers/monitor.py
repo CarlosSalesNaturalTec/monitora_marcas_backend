@@ -307,64 +307,95 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
 
 # --- Endpoints da API ---
 
-@router.post("/monitor/run", response_model=Dict[str, MonitorData], tags=["Monitor"])
-def run_and_save_monitoring(current_user: dict = Depends(get_current_user)):
+@router.post("/monitor/run", response_model=Dict[str, str], tags=["Monitor"])
+def run_and_save_monitoring(
+    request: HistoricalRunRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
-    Inicia uma nova execução de monitoramento 'relevante' para 'brand' e 'competitors'.
-    Esta é a funcionalidade "Dados do Agora".
+    Inicia uma nova execução de monitoramento completa, executando a coleta 
+    'relevante' (agora) e depois a 'histórica' a partir da data fornecida.
+    A 'start_date' é obrigatória.
     """
     search_terms: SearchTerms = get_search_terms(current_user)
-    response_data = {}
-    total_requests_made = 0
     session = _create_session_with_retries()
-
+    
+    # --- Etapa 1: Coleta de Dados Relevantes (do Agora) ---
     for group_name in ["brand", "competitors"]:
         remaining_quota = _get_remaining_quota()
         if remaining_quota == 0:
             break
-
         pages_to_fetch = min(10, remaining_quota)
-        
         term_group: TermGroup = getattr(search_terms, group_name)
         query_string = _build_query_string(term_group)
-        
         if not query_string.strip():
             continue
-        
         run_id = db.collection("monitor_runs").document().id
-
         search_results_raw, requests_made = _perform_paginated_google_search(
             session, query_string, pages_to_fetch, run_id, group_name
         )
         _increment_quota(requests_made)
-        total_requests_made += requests_made
-        
-        monitor_results = [
-            MonitorResultItem(**item) for item in search_results_raw if item.get("link")
-        ]
-        
+        monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
         run_metadata = MonitorRun(
             search_terms_query=query_string,
             search_group=group_name,
             search_type="relevante",
             total_results_found=len(monitor_results)
         )
-        
         _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
-        run_metadata.id = run_id
-        
-        response_data[group_name] = MonitorData(
-            run_metadata=run_metadata,
-            results=monitor_results
-        )
+
+    # --- Etapa 2: Coleta de Dados Históricos ---
+    start_date = request.start_date
+    end_date = date.today() - timedelta(days=1)
     
-    if total_requests_made == 0:
-         raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Cota diária de requisições da API do Google excedida. Nenhum novo dado foi coletado."
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A data de início não pode ser no futuro ou hoje."
         )
 
-    return response_data
+    current_date = start_date
+    last_saved_run_id = None
+    interrupted = False
+
+    while current_date <= end_date and not interrupted:
+        for group_name in ["brand", "competitors"]:
+            remaining_quota = _get_remaining_quota()
+            if remaining_quota == 0:
+                interrupted = True
+                break
+            pages_to_fetch = min(10, remaining_quota)
+            term_group: TermGroup = getattr(search_terms, group_name)
+            query_string = _build_query_string(term_group)
+            date_range = {"start": current_date, "end": current_date}
+            run_id = db.collection("monitor_runs").document().id
+            search_results_raw = []
+            if query_string.strip():
+                search_results_raw, requests_made = _perform_paginated_google_search(
+                    session, query_string, pages_to_fetch, run_id, group_name, date_range
+                )
+                _increment_quota(requests_made)
+            monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
+            start_of_current_date = datetime.combine(current_date, datetime.min.time())
+            run_metadata = MonitorRun(
+                search_terms_query=query_string,
+                search_group=group_name,
+                search_type="historico",
+                total_results_found=len(monitor_results),
+                range_start=start_of_current_date,
+                range_end=start_of_current_date
+            )
+            _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
+            last_saved_run_id = run_id
+        if not interrupted:
+            current_date += timedelta(days=1)
+
+    if interrupted and last_saved_run_id:
+        interruption_datetime = datetime.combine(current_date, datetime.min.time())
+        db.collection("monitor_runs").document(last_saved_run_id).update({"last_interruption_date": interruption_datetime})
+        return {"message": f"Coleta concluída parcialmente. Limite de requisições atingido. Você pode continuar a partir de {current_date.isoformat()} mais tarde."}
+
+    return {"message": "Coleta completa (relevante e histórica) concluída com sucesso."}
 
 
 @router.get("/monitor/summary", response_model=MonitorSummary, tags=["Monitor"])
@@ -450,84 +481,6 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao buscar o resumo do monitoramento: {e}"
         )
-
-
-@router.post("/monitor/run/historical", tags=["Monitor"])
-def run_historical_monitoring(
-    request: HistoricalRunRequest,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Inicia um preenchimento de dados históricos a partir de uma data de início.
-    """
-    search_terms: SearchTerms = get_search_terms(current_user)
-    session = _create_session_with_retries()
-    
-    start_date = request.start_date
-    end_date = date.today() - timedelta(days=1)
-    
-    if start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A data de início não pode ser no futuro ou hoje."
-        )
-
-    current_date = start_date
-    last_saved_run_id = None
-    interrupted = False
-
-    while current_date <= end_date:
-        if interrupted:
-            break
-
-        for group_name in ["brand", "competitors"]:
-            remaining_quota = _get_remaining_quota()
-            if remaining_quota == 0:
-                interrupted = True
-                break
-
-            pages_to_fetch = min(10, remaining_quota)
-            term_group: TermGroup = getattr(search_terms, group_name)
-            query_string = _build_query_string(term_group)
-            date_range = {"start": current_date, "end": current_date}
-            run_id = db.collection("monitor_runs").document().id
-            search_results_raw = []
-            requests_made = 0
-
-            if query_string.strip():
-                search_results_raw, requests_made = _perform_paginated_google_search(
-                    session, query_string, pages_to_fetch, run_id, group_name, date_range
-                )
-                _increment_quota(requests_made)
-
-            monitor_results = [
-                MonitorResultItem(**item) for item in search_results_raw if item.get("link")
-            ]
-            
-            start_of_current_date = datetime.combine(current_date, datetime.min.time())
-            run_metadata = MonitorRun(
-                search_terms_query=query_string,
-                search_group=group_name,
-                search_type="historico",
-                total_results_found=len(monitor_results),
-                range_start=start_of_current_date,
-                range_end=start_of_current_date
-            )
-            
-            _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
-            last_saved_run_id = run_id
-
-        if not interrupted:
-            current_date += timedelta(days=1)
-
-    if interrupted and last_saved_run_id:
-        interruption_datetime = datetime.combine(current_date, datetime.min.time())
-        db.collection("monitor_runs").document(last_saved_run_id).update({
-            "last_interruption_date": interruption_datetime
-        })
-        return {"message": f"Coleta histórica parcial concluída. Limite de requisições atingido. Você pode continuar a partir de {current_date.isoformat()} mais tarde."}
-
-    return {"message": "Coleta histórica concluída com sucesso."}
 
 
 @router.get("/monitor/latest", response_model=LatestMonitorData, tags=["Monitor"])
