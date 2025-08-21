@@ -111,32 +111,16 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - O acesso para edição é restrito a usuários com a permissão `ADM`. Usuários não-administradores visualizam os termos em modo somente leitura.
   - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
 
-- **Sistema/Monitorar (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados.
-  - **Dados do Agora (Busca Relevante)**:
-    - Realiza buscas na API do Google CSE para os termos de "Marca" e "Concorrentes".
-    - A busca é paginada, coletando até 100 resultados (10 páginas) para obter uma amostragem relevante.
-    - Os resultados de cada busca são armazenados no Firestore.
-    - A interface exibe os resultados da última coleta realizada.
-    - Para evitar coletas duplicadas, o botão para iniciar uma nova busca é desabilitado caso já exista uma coleta.
-  - **Dados do Passado (Busca Histórica)**:
-    - Permite ao usuário definir uma data de início para uma coleta retroativa.
-    - Utiliza uma estratégia de *backfill* recursivo, pesquisando dia a dia desde a data de início até a véspera do dia atual.
-    - As buscas são paginadas (até 10 páginas por dia) e utilizam o parâmetro `sort=date` da API do Google.
-    - Os resultados são armazenados no Firestore, com metadados que incluem o intervalo de datas da coleta.
-  - **Dados Contínuos (Busca Agendada)**:
-    - Endpoint: `POST /monitor/run/continuous`
-    - Projetado para ser acionado por um serviço de agendamento (ex: Google Cloud Scheduler), executando uma ou mais vezes ao dia.
-    - Realiza buscas para "Marca" e "Concorrentes" utilizando o parâmetro `dateRestrict=d1` para obter resultados das últimas 24 horas.
-    - Pagina até um máximo de 10 páginas por grupo de termos, respeitando a cota diária de requisições.
-    - Verifica duplicatas de URLs antes de salvar novos resultados no Firestore.
-    - Cria um log detalhado de cada requisição no Firestore para fins de auditoria e depuração.
-  - **Exclusão de Dados (Limpeza Total)**:
-    - Endpoint: `DELETE /monitor/all-data`
-    - Exclui permanentemente **todos** os dados relacionados ao monitoramento, limpando as coleções `monitor_runs`, `monitor_results`, `monitor_logs` e `daily_quotas`.
-    - Esta é uma operação destrutiva e deve ser usada com cuidado, geralmente para reiniciar o ambiente de monitoramento.
-    - O acesso é restrito a usuários com a permissão `ADM`.
-  - **Controle de Cota**:
-    - Implementa um contador global que limita o total de requisições à API do Google a 100 por dia, somando todos os tipos de busca.
-    - Caso a cota diária seja atingida, o processo de coleta é interrompido.
-  - **Gerenciamento de Duplicatas**:
-    - Utiliza um hash da URL como ID do documento no Firestore para evitar o armazenamento de links duplicados em todas as coletas.
+- **Sistema/Monitorar (rota `/monitor`)**: Ferramenta central para a execução e análise das coletas de dados. A interface foi reestruturada para maior clareza e eficiência:
+  - **Aba de Resumo e Logs**: Apresenta uma visão geral de todas as atividades de monitoramento. Inclui estatísticas agregadas (total de coletas, requisições, resultados) e tabelas com as últimas coletas realizadas e os logs de requisição mais recentes, permitindo um acompanhamento detalhado do processo.
+  - **Aba de Dados**: Exibe uma tabela unificada com **todos** os resultados coletados (relevantes, históricos e contínuos), ordenados do mais recente para o mais antigo. Cada linha mostra a URL, o tipo de coleta, a data do evento e o snippet de texto, fornecendo uma visão consolidada de todas as menções encontradas.
+  - **Aba de Coletas**: Centraliza todas as ações de coleta de dados.
+    - **Coleta Completa**: Unifica as buscas "do agora" e "histórica". O usuário informa uma data de início, e o sistema executa um processo sequencial: primeiro, busca os resultados mais recentes (relevantes) e, em seguida, preenche os dados históricos desde a data informada. A interface exibe o andamento do processo.
+    - **Gerenciamento de Dados**: Permite que administradores limpem todos os dados de monitoramento para reiniciar o ciclo de coletas.
+  - **Coleta Contínua (Agendada)**:
+    - Endpoint (`POST /monitor/run/continuous`) projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
+    - Realiza buscas diárias para capturar menções das últimas 24 horas, garantindo que o monitoramento seja constante.
+  - **Lógica de Coleta e Armazenamento**:
+    - Todas as coletas (relevantes, históricas e contínuas) registram logs detalhados de cada requisição à API do Google.
+    - O sistema utiliza um hash da URL como ID do documento no Firestore para evitar duplicatas e garantir a integridade dos dados.
+    - O controle de cota diária (100 requisições) é compartilhado entre todos os tipos de coleta para evitar exceder os limites da API.

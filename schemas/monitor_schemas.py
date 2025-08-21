@@ -81,3 +81,21 @@ class MonitorSummary(BaseModel):
     results_by_group: dict[str, int]
     latest_runs: List[RunSummary] = Field(default_factory=list)
     latest_logs: List[RequestLog] = Field(default_factory=list)
+
+# --- Schemas for Unified Data View ---
+
+class UnifiedMonitorResult(BaseModel):
+    """Representa um item de resultado unificado com dados da sua execução."""
+    # From MonitorResultItem
+    link: str
+    displayLink: str
+    title: str
+    snippet: str
+    htmlSnippet: str
+    
+    # From MonitorRun
+    search_type: Literal["relevante", "historico", "continuo"]
+    search_group: str
+    collected_at: datetime
+    range_start: Optional[datetime] = None
+    range_end: Optional[datetime] = None

@@ -13,7 +13,7 @@ from schemas.term_schemas import SearchTerms, TermGroup
 from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
     HistoricalRunRequest, HistoricalMonitorData, MonitorLog, MonitorSummary, 
-    RunSummary, RequestLog
+    RunSummary, RequestLog, UnifiedMonitorResult
 )
 from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
@@ -170,6 +170,7 @@ def run_continuous_monitoring():
                         doc_ref = db.collection("monitor_results").document(item.generate_id())
                         item_dict = item.dict()
                         item_dict["run_id"] = run_id
+                        item_dict["search_group"] = group_name
                         batch.set(doc_ref, item_dict)
                     batch.commit()
                 
@@ -294,6 +295,7 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
                 
                 result_with_run_id = item_data.dict()
                 result_with_run_id["run_id"] = run_ref.id
+                result_with_run_id["search_group"] = run_metadata.search_group
                 batch.set(doc_ref, result_with_run_id)
             
             batch.commit()
@@ -402,44 +404,47 @@ def run_and_save_monitoring(
 def get_monitor_summary(current_user: dict = Depends(get_current_user)):
     """
     Busca um resumo agregado e os logs recentes das atividades de monitoramento.
+    Calcula as estatísticas iterando sobre os resultados para garantir consistência.
     """
     try:
-        # 1. Fetch runs and recent logs
+        # 1. Fetch all runs and create a map for efficient lookup
         runs_ref = db.collection("monitor_runs").stream()
-        
         all_runs = []
+        runs_map = {}
         for doc in runs_ref:
             run_data = doc.to_dict()
-            run_data['id'] = doc.id  # Prioriza o ID do documento
-            all_runs.append(MonitorRun(**run_data))
+            run_data['id'] = doc.id
+            run = MonitorRun(**run_data)
+            all_runs.append(run)
+            runs_map[doc.id] = run
 
+        # 2. Fetch recent logs
         logs_ref = db.collection("monitor_logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(100).stream()
         recent_logs = [MonitorLog(**doc.to_dict()) for doc in logs_ref]
 
-        # 2. Perform efficient counts using count() aggregation
-        runs_count_query = db.collection("monitor_runs").count()
-        logs_count_query = db.collection("monitor_logs").count()
+        # 3. Calculate stats by iterating through results for accuracy
+        results_ref = db.collection("monitor_results").stream()
+        total_results_saved = 0
+        results_by_group = {"brand": 0, "competitors": 0}
+        for result_doc in results_ref:
+            run_id = result_doc.get("run_id")
+            run_info = runs_map.get(run_id)
+            
+            # This check handles orphaned results, making the count consistent
+            if run_info:
+                total_results_saved += 1
+                if run_info.search_group in results_by_group:
+                    results_by_group[run_info.search_group] += 1
         
-        runs_count_result = runs_count_query.get()
-        logs_count_result = logs_count_query.get()
-
-        total_runs = runs_count_result[0][0].value
-        total_requests = logs_count_result[0][0].value
-
-        # 3. Aggregate data from the in-memory runs list
-        total_results_saved = sum(run.total_results_found for run in all_runs)
-
+        # 4. Get other stats
+        total_runs = len(all_runs)
+        total_requests = db.collection("monitor_logs").count().get()[0][0].value
         runs_by_type = {"relevante": 0, "historico": 0, "continuo": 0}
         for run in all_runs:
             if run.search_type in runs_by_type:
                 runs_by_type[run.search_type] += 1
 
-        results_by_group = {"brand": 0, "competitors": 0}
-        for run in all_runs:
-            if run.search_group in results_by_group:
-                results_by_group[run.search_group] += run.total_results_found
-
-        # 4. Prepare latest runs and logs for the response
+        # 5. Prepare latest runs and logs for the response
         all_runs.sort(key=lambda r: r.collected_at, reverse=True)
         latest_runs_data = all_runs[:50]
 
@@ -483,108 +488,55 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
         )
 
 
-@router.get("/monitor/latest", response_model=LatestMonitorData, tags=["Monitor"])
-def get_latest_monitor_data(current_user: dict = Depends(get_current_user)):
+@router.get("/monitor/all-results", response_model=List[UnifiedMonitorResult], tags=["Monitor"])
+def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
     """
-    Busca a última execução de monitoramento 'relevante' para 'brand' e 'competitors'.
+    Busca todos os resultados de monitoramento, unificando-os com os metadados
+    de suas respectivas execuções (runs) para uma exibição consolidada.
     """
-    latest_data = LatestMonitorData()
-
-    for group_name in ["brand", "competitors"]:
-        try:
-            runs_query = db.collection("monitor_runs") \
-                .where("search_group", "==", group_name) \
-                .where("search_type", "==", "relevante") \
-                .order_by("collected_at", direction=firestore.Query.DESCENDING) \
-                .limit(1)
-            
-            run_docs = list(runs_query.stream())
-            
-            if not run_docs:
-                continue
-
-            latest_run_doc = run_docs[0]
-            run_data = latest_run_doc.to_dict()
-            run_data['id'] = latest_run_doc.id
-            latest_run_data = MonitorRun(**run_data)
-            
-            results_query = db.collection("monitor_results").where("run_id", "==", latest_run_doc.id)
-            result_docs = results_query.stream()
-            results = [MonitorResultItem(**doc.to_dict()) for doc in result_docs]
-            
-            monitor_data = MonitorData(run_metadata=latest_run_data, results=results)
-            setattr(latest_data, group_name, monitor_data)
-
-        except FailedPrecondition as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Um índice do Firestore necessário está faltando. Verifique os logs do Firebase para um link de criação. Erro: {e}"
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Erro ao buscar os últimos dados para '{group_name}': {e}"
-            )
-            
-    return latest_data
-
-@router.get("/monitor/historical", response_model=HistoricalMonitorData, tags=["Monitor"])
-def get_historical_monitor_data(current_user: dict = Depends(get_current_user)):
-    """
-    Busca todas as execuções de monitoramento 'histórico' e seus resultados associados.
-    """
-    historical_data = HistoricalMonitorData()
-    
     try:
-        runs_query = db.collection("monitor_runs") \
-            .where("search_type", "==", "historico") \
-            .order_by("range_start", direction=firestore.Query.ASCENDING)
+        # 1. Buscar todas as execuções e mapeá-las por ID
+        runs_ref = db.collection("monitor_runs").stream()
+        runs_map = {doc.id: MonitorRun(**doc.to_dict()) for doc in runs_ref}
+
+        # 2. Buscar todos os resultados
+        results_ref = db.collection("monitor_results").stream()
         
-        all_run_docs = list(runs_query.stream())
+        unified_results = []
+        for result_doc in results_ref:
+            result_data = result_doc.to_dict()
+            run_id = result_data.get("run_id")
+            
+            run_info = runs_map.get(run_id)
+            if not run_info:
+                continue # Pula resultados órfãos
+
+            # Combina os dados do resultado com os da execução
+            unified_item = UnifiedMonitorResult(
+                link=result_data.get("link", ""),
+                displayLink=result_data.get("displayLink", ""),
+                title=result_data.get("title", ""),
+                snippet=result_data.get("snippet", ""),
+                htmlSnippet=result_data.get("htmlSnippet", ""),
+                search_type=run_info.search_type,
+                search_group=run_info.search_group,
+                collected_at=run_info.collected_at,
+                range_start=run_info.range_start,
+                range_end=run_info.range_end
+            )
+            unified_results.append(unified_item)
+            
+        # Ordena os resultados pela data do evento (range_start para histórico/contínuo, collected_at para relevante), do mais novo para o mais antigo
+        unified_results.sort(key=lambda x: x.range_start if x.range_start else x.collected_at, reverse=True)
         
-        if not all_run_docs:
-            return historical_data
+        return unified_results
 
-        run_ids = [doc.id for doc in all_run_docs]
-        all_results = {}
-
-        for i in range(0, len(run_ids), 30):
-            batch_ids = run_ids[i:i + 30]
-            results_query = db.collection("monitor_results").where("run_id", "in", batch_ids)
-            for doc in results_query.stream():
-                result_data = doc.to_dict()
-                run_id = result_data.get("run_id")
-                if run_id not in all_results:
-                    all_results[run_id] = []
-                all_results[run_id].append(MonitorResultItem(**result_data))
-
-        for run_doc in all_run_docs:
-            run_data_dict = run_doc.to_dict()
-            run_data_dict['id'] = run_doc.id
-            run_data = MonitorRun(**run_data_dict)
-            
-            group = run_data.search_group
-            results_for_run = all_results.get(run_doc.id, [])
-            
-            monitor_data = MonitorData(run_metadata=run_data, results=results_for_run)
-            
-            if group == "brand":
-                historical_data.brand.append(monitor_data)
-            elif group == "competitors":
-                historical_data.competitors.append(monitor_data)
-
-    except FailedPrecondition as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Um índice do Firestore necessário está faltando. Verifique os logs do Firebase para um link de criação. Erro: {e}"
-        )
     except Exception as e:
+        print(f"Error fetching all monitor results: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao buscar dados históricos: {e}"
+            detail=f"Erro ao buscar todos os resultados do monitoramento: {e}"
         )
-            
-    return historical_data
 
 
 def _delete_collection_in_batches(collection_ref, batch_size: int) -> int:
