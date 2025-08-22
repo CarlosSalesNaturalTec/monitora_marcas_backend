@@ -815,6 +815,7 @@ def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
 
             # Combina os dados do resultado com os da execução
             unified_item = UnifiedMonitorResult(
+                run_id=run_id,
                 link=result_data.get("link", ""),
                 displayLink=result_data.get("displayLink", ""),
                 title=result_data.get("title", ""),

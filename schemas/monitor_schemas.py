@@ -97,6 +97,8 @@ class UpdateHistoricalStartDateRequest(BaseModel):
 
 class UnifiedMonitorResult(BaseModel):
     """Representa um item de resultado unificado com dados da sua execução."""
+    run_id: str # ID da execução que encontrou este resultado
+    
     # From MonitorResultItem
     link: str
     displayLink: str
