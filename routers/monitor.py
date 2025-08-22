@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -14,7 +14,7 @@ from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
     HistoricalRunRequest, HistoricalMonitorData, MonitorLog, MonitorSummary, 
     RunSummary, RequestLog, UnifiedMonitorResult, HistoricalStatusResponse,
-    UpdateHistoricalStartDateRequest
+    UpdateHistoricalStartDateRequest, SystemStatus
 )
 from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
@@ -25,6 +25,8 @@ router = APIRouter()
 # --- Constantes ---
 QUOTA_COLLECTION = "daily_quotas"
 MAX_DAILY_REQUESTS = 100
+SYSTEM_STATUS_DOC = "system_status"
+PLATFORM_CONFIG_COL = "platform_config"
 
 # --- Configuração de Sessão com Retry ---
 
@@ -70,7 +72,7 @@ def _increment_quota(requests_made: int):
 def _get_platform_search_terms() -> SearchTerms:
     """Busca os termos de pesquisa da plataforma diretamente do Firestore."""
     try:
-        doc_ref = db.collection("platform_config").document("search_terms")
+        doc_ref = db.collection(PLATFORM_CONFIG_COL).document("search_terms")
         doc = doc_ref.get()
         if doc.exists:
             return SearchTerms(**doc.to_dict())
@@ -139,70 +141,84 @@ def _get_historical_run_status() -> Tuple[Optional[str], Optional[date], Optiona
         print(f"WARN: Não foi possível buscar o status da coleta histórica: {e}")
         return None, None, None
 
-# --- Continuous Monitoring Endpoint ---
+# --- Gerenciamento de Status do Sistema ---
 
-@router.post("/monitor/run/continuous", status_code=status.HTTP_200_OK, tags=["Monitor"])
-def run_continuous_monitoring():
-    """
-    Inicia uma execução de monitoramento contínuo (últimas 24h).
-    Projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
-    """
-    api_key = os.getenv("GOOGLE_API_KEY")
-    cse_id = os.getenv("GOOGLE_CSE_ID")
+def _update_system_status(is_running: bool, task: Optional[str] = None, message: Optional[str] = None):
+    """Atualiza o documento de status do sistema no Firestore."""
+    status_ref = db.collection(PLATFORM_CONFIG_COL).document(SYSTEM_STATUS_DOC)
+    status_data = {
+        "is_monitoring_running": is_running,
+        "current_task": task if is_running else None,
+        "message": message
+    }
+    if is_running:
+        status_data["task_start_time"] = datetime.utcnow()
+    else:
+        status_data["last_completion_time"] = datetime.utcnow()
     
-    if not api_key or not cse_id:
-        print("CRITICAL: As credenciais da API do Google não estão configuradas.")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Credenciais da API do Google não configuradas."
-        )
+    final_data = {k: v for k, v in status_data.items() if v is not None}
+    status_ref.set(final_data, merge=True)
 
-    search_terms = _get_platform_search_terms()
-    total_new_urls_all_groups = 0
-    session = _create_session_with_retries()
-    
-    for group_name in ["brand", "competitors"]:
-        term_group: TermGroup = getattr(search_terms, group_name)
-        query_string = _build_query_string(term_group)
 
-        if not query_string.strip():
-            continue
+# --- Tarefas de Background ---
 
-        run_id = db.collection("monitor_runs").document().id
-        total_new_urls_for_group = 0
+def _task_run_continuous_monitoring():
+    """Tarefa de background para a coleta contínua."""
+    try:
+        _update_system_status(True, "Coleta Contínua", "Coleta de dados em andamento.")
         
-        for page in range(10): # Paginação até 10 páginas
-            if _get_remaining_quota() <= 0:
-                print("INFO: Cota diária de requisições atingida.")
-                break
+        api_key = os.getenv("GOOGLE_API_KEY")
+        cse_id = os.getenv("GOOGLE_CSE_ID")
+        if not api_key or not cse_id:
+            raise Exception("Credenciais da API do Google não configuradas.")
 
-            start_index = 1 + page * 10
+        search_terms = _get_platform_search_terms()
+        session = _create_session_with_retries()
+        
+        for group_name in ["brand", "competitors"]:
+            term_group: TermGroup = getattr(search_terms, group_name)
+            query_string = _build_query_string(term_group)
+            if not query_string.strip():
+                continue
+
+            run_ref = db.collection("monitor_runs").document()
+            run_id = run_ref.id
+            total_new_urls_for_group = 0
             
-            try:
+            # Cria o registro da run com status "in_progress"
+            today = date.today()
+            start_of_day = datetime.combine(today, datetime.min.time())
+            run_metadata = MonitorRun(
+                id=run_id,
+                search_terms_query=query_string,
+                search_group=group_name,
+                search_type="continuo",
+                total_results_found=0, # Será atualizado no final
+                range_start=start_of_day,
+                range_end=start_of_day
+            )
+            run_ref.set(run_metadata.dict())
+
+            for page in range(10):
+                if _get_remaining_quota() <= 0:
+                    break
+                # ... (lógica de busca e salvamento idêntica à original)
+                start_index = 1 + page * 10
                 url = "https://www.googleapis.com/customsearch/v1"
-                params = {
-                    "key": api_key, "cx": cse_id, "q": query_string,
-                    "num": 10, "start": start_index, "dateRestrict": "d1"
-                }
+                params = {"key": api_key, "cx": cse_id, "q": query_string, "num": 10, "start": start_index, "dateRestrict": "d1"}
                 response = session.get(url, params=params, timeout=(3.05, 10))
                 _increment_quota(1)
                 response.raise_for_status()
                 search_results = response.json()
-                
                 items_raw = search_results.get("items", [])
-                
                 if not items_raw:
                     _log_request(run_id, group_name, page + 1, 0, 0)
                     break
-
                 results_page = [MonitorResultItem(**item) for item in items_raw if item.get("link")]
                 doc_refs = [db.collection("monitor_results").document(item.generate_id()) for item in results_page]
-                
                 existing_docs = db.get_all(doc_refs)
                 existing_ids = {doc.id for doc in existing_docs if doc.exists}
-
                 new_items_to_save = [item for item in results_page if item.generate_id() not in existing_ids]
-
                 if new_items_to_save:
                     batch = db.batch()
                     for item in new_items_to_save:
@@ -212,32 +228,199 @@ def run_continuous_monitoring():
                         item_dict["search_group"] = group_name
                         batch.set(doc_ref, item_dict)
                     batch.commit()
-                
                 new_urls_saved_count = len(new_items_to_save)
                 total_new_urls_for_group += new_urls_saved_count
-                
                 _log_request(run_id, group_name, page + 1, len(items_raw), new_urls_saved_count)
 
-            except requests.exceptions.RequestException as e:
-                print(f"ERROR: Falha na requisição para o Google (página {page + 1}, grupo {group_name}): {e}")
-                break
+            # Atualiza a run com o total e o status "completed"
+            run_ref.update({
+                "total_results_found": total_new_urls_for_group,
+                "status": "completed"
+            })
+            
+    except Exception as e:
+        print(f"ERRO na tarefa de coleta contínua: {e}")
+        _update_system_status(False, "Coleta Contínua", f"Falha na coleta contínua: {e}")
+    finally:
+        _update_system_status(False, "Coleta Contínua", "Coleta contínua finalizada.")
 
-        today = date.today()
-        start_of_day = datetime.combine(today, datetime.min.time())
-        run_metadata = MonitorRun(
-            id=run_id,
-            search_terms_query=query_string,
-            search_group=group_name,
-            search_type="continuo",
-            total_results_found=total_new_urls_for_group,
-            range_start=start_of_day,
-            range_end=start_of_day
-        )
+
+def _task_run_initial_monitoring(start_date_iso: str):
+    """Tarefa de background para a coleta inicial (relevante + histórica)."""
+    try:
+        _update_system_status(True, "Coleta Inicial", "Coleta de dados em andamento.")
+        search_terms = _get_platform_search_terms()
+        session = _create_session_with_retries()
         
-        db.collection("monitor_runs").document(run_id).set(run_metadata.dict())
-        total_new_urls_all_groups += total_new_urls_for_group
+        # Etapa 1: Coleta Relevante
+        for group_name in ["brand", "competitors"]:
+            # ... (lógica idêntica à original, mas salvando runs com status)
+            remaining_quota = _get_remaining_quota()
+            if remaining_quota == 0: break
+            pages_to_fetch = min(10, remaining_quota)
+            term_group: TermGroup = getattr(search_terms, group_name)
+            query_string = _build_query_string(term_group)
+            if not query_string.strip(): continue
+            
+            run_ref = db.collection("monitor_runs").document()
+            search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name)
+            _increment_quota(requests_made)
+            monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
+            
+            run_metadata = MonitorRun(
+                search_terms_query=query_string,
+                search_group=group_name,
+                search_type="relevante",
+                total_results_found=len(monitor_results)
+            )
+            saved_run_id = _save_monitor_data(run_metadata, monitor_results, run_id=run_ref.id)
+            db.collection("monitor_runs").document(saved_run_id).update({"status": "completed"})
 
-    return {"message": f"Coleta contínua concluída. Total de {total_new_urls_all_groups} novas URLs salvas."}
+        # Etapa 2: Coleta Histórica
+        start_date = date.fromisoformat(start_date_iso)
+        end_date = date.today() - timedelta(days=1)
+        
+        if start_date <= end_date:
+            current_date = end_date
+            last_saved_run_id = None
+            interrupted = False
+            while current_date >= start_date and not interrupted:
+                for group_name in ["brand", "competitors"]:
+                    # ... (lógica idêntica à original, mas salvando runs com status)
+                    remaining_quota = _get_remaining_quota()
+                    if remaining_quota == 0:
+                        interrupted = True
+                        break
+                    pages_to_fetch = min(10, remaining_quota)
+                    term_group: TermGroup = getattr(search_terms, group_name)
+                    query_string = _build_query_string(term_group)
+                    date_range = {"start": current_date, "end": current_date}
+                    
+                    run_ref = db.collection("monitor_runs").document()
+                    search_results_raw = []
+                    if query_string.strip():
+                        search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, date_range)
+                        _increment_quota(requests_made)
+                    
+                    monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
+                    start_of_current_date = datetime.combine(current_date, datetime.min.time())
+                    run_metadata = MonitorRun(
+                        search_terms_query=query_string, search_group=group_name, search_type="historico",
+                        total_results_found=len(monitor_results), range_start=start_of_current_date,
+                        range_end=start_of_current_date, historical_run_start_date=start_date
+                    )
+                    saved_run_id = _save_monitor_data(run_metadata, monitor_results, run_id=run_ref.id)
+                    db.collection("monitor_runs").document(saved_run_id).update({"status": "completed"})
+                    last_saved_run_id = saved_run_id
+
+                if not interrupted:
+                    current_date -= timedelta(days=1)
+
+            if interrupted and last_saved_run_id:
+                interruption_datetime = datetime.combine(current_date, datetime.min.time())
+                db.collection("monitor_runs").document(last_saved_run_id).update({"last_interruption_date": interruption_datetime})
+
+    except Exception as e:
+        print(f"ERRO na tarefa de coleta inicial: {e}")
+        _update_system_status(False, "Coleta Inicial", f"Falha na coleta inicial: {e}")
+    finally:
+        _update_system_status(False, "Coleta Inicial", "Coleta inicial finalizada.")
+
+
+def _task_run_scheduled_historical():
+    """Tarefa de background para a coleta histórica agendada."""
+    try:
+        _update_system_status(True, "Coleta Histórica Agendada", "Coleta de dados em andamento.")
+        search_terms = _get_platform_search_terms()
+        session = _create_session_with_retries()
+        interrupt_doc_id, last_interruption, original_start_date = _get_historical_run_status()
+
+        if not (interrupt_doc_id and last_interruption and original_start_date):
+            # ... (lógica de recuperação idêntica à original)
+            oldest_run_query = db.collection("monitor_runs").where("search_type", "==", "historico").order_by("range_start", direction=firestore.Query.ASCENDING).limit(1)
+            oldest_run_docs = list(oldest_run_query.stream())
+            if not oldest_run_docs:
+                _update_system_status(False, "Coleta Histórica Agendada", "Nenhuma coleta histórica para continuar.")
+                return
+            oldest_run_data = oldest_run_docs[0].to_dict()
+            oldest_processed_dt = oldest_run_data.get("range_start")
+            original_start_val = oldest_run_data.get("historical_run_start_date")
+            if not oldest_processed_dt or not original_start_val:
+                _update_system_status(False, "Coleta Histórica Agendada", "Dados de estado inválidos.")
+                return
+            oldest_processed_date = oldest_processed_dt.date()
+            original_start_date = date.fromisoformat(original_start_val) if isinstance(original_start_val, str) else (original_start_val.date() if isinstance(original_start_val, datetime) else original_start_val)
+            if oldest_processed_date > original_start_date:
+                last_interruption = oldest_processed_date - timedelta(days=1)
+            else:
+                _update_system_status(False, "Coleta Histórica Agendada", "Coleta histórica concluída.")
+                return
+
+        if interrupt_doc_id:
+            db.collection("monitor_runs").document(interrupt_doc_id).update({"last_interruption_date": None})
+
+        end_date = last_interruption
+        start_date = original_start_date
+        if start_date > end_date:
+            _update_system_status(False, "Coleta Histórica Agendada", "Coleta histórica já está atualizada.")
+            return
+
+        current_date = end_date
+        last_saved_run_id = None
+        interrupted = False
+        while current_date >= start_date and not interrupted:
+            for group_name in ["brand", "competitors"]:
+                # ... (lógica idêntica à original, mas salvando runs com status)
+                remaining_quota = _get_remaining_quota()
+                if remaining_quota == 0:
+                    interrupted = True
+                    break
+                pages_to_fetch = min(10, remaining_quota)
+                term_group: TermGroup = getattr(search_terms, group_name)
+                query_string = _build_query_string(term_group)
+                date_range = {"start": current_date, "end": current_date}
+                
+                run_ref = db.collection("monitor_runs").document()
+                search_results_raw = []
+                if query_string.strip():
+                    search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, date_range)
+                    _increment_quota(requests_made)
+                
+                monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
+                start_of_current_date = datetime.combine(current_date, datetime.min.time())
+                run_metadata = MonitorRun(
+                    search_terms_query=query_string, search_group=group_name, search_type="historico",
+                    total_results_found=len(monitor_results), range_start=start_of_current_date,
+                    range_end=start_of_current_date, historical_run_start_date=original_start_date
+                )
+                saved_run_id = _save_monitor_data(run_metadata, monitor_results, run_id=run_ref.id)
+                db.collection("monitor_runs").document(saved_run_id).update({"status": "completed"})
+                last_saved_run_id = saved_run_id
+
+            if not interrupted:
+                current_date -= timedelta(days=1)
+
+        if interrupted and last_saved_run_id:
+            interruption_datetime = datetime.combine(current_date, datetime.min.time())
+            db.collection("monitor_runs").document(last_saved_run_id).update({"last_interruption_date": interruption_datetime})
+
+    except Exception as e:
+        print(f"ERRO na tarefa de coleta histórica agendada: {e}")
+        _update_system_status(False, "Coleta Histórica Agendada", f"Falha na coleta: {e}")
+    finally:
+        _update_system_status(False, "Coleta Histórica Agendada", "Coleta histórica agendada finalizada.")
+
+
+# --- Continuous Monitoring Endpoint ---
+
+@router.post("/monitor/run/continuous", status_code=status.HTTP_202_ACCEPTED, tags=["Monitor"])
+def run_continuous_monitoring(background_tasks: BackgroundTasks):
+    """
+    Inicia uma execução de monitoramento contínuo (últimas 24h) em segundo plano.
+    Projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
+    """
+    background_tasks.add_task(_task_run_continuous_monitoring)
+    return {"message": "Coleta contínua iniciada em segundo plano."}
 
 # --- Auxiliar de Busca do Google ---
 
@@ -317,12 +500,11 @@ def _perform_paginated_google_search(
 
 def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem], run_id: Optional[str] = None) -> str:
     """Salva os metadados da execução e os resultados da busca no Firestore."""
+    run_ref = db.collection("monitor_runs").document(run_id) if run_id else db.collection("monitor_runs").document()
     try:
-        run_ref = db.collection("monitor_runs").document(run_id) if run_id else db.collection("monitor_runs").document()
         run_metadata.id = run_ref.id
         
         run_dict = run_metadata.dict()
-        # Garante que a data seja serializada corretamente
         if 'historical_run_start_date' in run_dict and isinstance(run_dict['historical_run_start_date'], date):
             run_dict['historical_run_start_date'] = run_dict['historical_run_start_date'].isoformat()
 
@@ -345,6 +527,7 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
         
         return run_ref.id
     except Exception as e:
+        run_ref.update({"status": "failed"})
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao salvar os dados de monitoramento no Firestore: {e}"
@@ -352,16 +535,22 @@ def _save_monitor_data(run_metadata: MonitorRun, results: List[MonitorResultItem
 
 # --- Endpoints da API ---
 
-@router.post("/monitor/run", response_model=Dict[str, str], tags=["Monitor"])
+@router.post("/monitor/run", response_model=Dict[str, str], tags=["Monitor"], status_code=status.HTTP_202_ACCEPTED)
 def run_initial_monitoring(
     request: HistoricalRunRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Inicia a primeira execução de monitoramento.
-    Executa a coleta 'relevante' e depois inicia a 'histórica' até o limite da cota.
-    A continuação é feita por um processo agendado.
+    Inicia a primeira execução de monitoramento em segundo plano.
     """
+    status_doc = db.collection(PLATFORM_CONFIG_COL).document(SYSTEM_STATUS_DOC).get()
+    if status_doc.exists and status_doc.to_dict().get("is_monitoring_running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Uma tarefa de monitoramento já está em andamento."
+        )
+
     has_data = next(db.collection("monitor_runs").limit(1).stream(), None)
     if has_data:
         raise HTTPException(
@@ -369,193 +558,31 @@ def run_initial_monitoring(
             detail="A coleta de dados já foi iniciada. Para recomeçar, todos os dados devem ser limpos."
         )
 
-    search_terms: SearchTerms = get_search_terms(current_user)
-    session = _create_session_with_retries()
+    background_tasks.add_task(_task_run_initial_monitoring, request.start_date.isoformat())
     
-    # --- Etapa 1: Coleta de Dados Relevantes (do Agora) ---
-    print("INFO: Executando coleta 'relevante' pela primeira vez.")
-    for group_name in ["brand", "competitors"]:
-        remaining_quota = _get_remaining_quota()
-        if remaining_quota == 0:
-            break
-        pages_to_fetch = min(10, remaining_quota)
-        term_group: TermGroup = getattr(search_terms, group_name)
-        query_string = _build_query_string(term_group)
-        if not query_string.strip():
-            continue
-        run_id = db.collection("monitor_runs").document().id
-        search_results_raw, requests_made = _perform_paginated_google_search(
-            session, query_string, pages_to_fetch, run_id, group_name
-        )
-        _increment_quota(requests_made)
-        monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
-        run_metadata = MonitorRun(
-            search_terms_query=query_string,
-            search_group=group_name,
-            search_type="relevante",
-            total_results_found=len(monitor_results)
-        )
-        _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
-
-    # --- Etapa 2: Início da Coleta de Dados Históricos ---
-    start_date = request.start_date
-    end_date = date.today() - timedelta(days=1)
-    
-    if start_date > end_date:
-        return {"message": "Coleta relevante concluída. Nenhuma data histórica para processar."}
-
-    current_date = end_date
-    last_saved_run_id = None
-    interrupted = False
-
-    while current_date >= start_date and not interrupted:
-        for group_name in ["brand", "competitors"]:
-            remaining_quota = _get_remaining_quota()
-            if remaining_quota == 0:
-                interrupted = True
-                break
-            pages_to_fetch = min(10, remaining_quota)
-            term_group: TermGroup = getattr(search_terms, group_name)
-            query_string = _build_query_string(term_group)
-            date_range = {"start": current_date, "end": current_date}
-            run_id = db.collection("monitor_runs").document().id
-            search_results_raw = []
-            if query_string.strip():
-                search_results_raw, requests_made = _perform_paginated_google_search(
-                    session, query_string, pages_to_fetch, run_id, group_name, date_range
-                )
-                _increment_quota(requests_made)
-            monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
-            start_of_current_date = datetime.combine(current_date, datetime.min.time())
-            run_metadata = MonitorRun(
-                search_terms_query=query_string,
-                search_group=group_name,
-                search_type="historico",
-                total_results_found=len(monitor_results),
-                range_start=start_of_current_date,
-                range_end=start_of_current_date,
-                historical_run_start_date=start_date
-            )
-            _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
-            last_saved_run_id = run_id
-        if not interrupted:
-            current_date -= timedelta(days=1)
-
-    if interrupted and last_saved_run_id:
-        interruption_datetime = datetime.combine(current_date, datetime.min.time())
-        db.collection("monitor_runs").document(last_saved_run_id).update({
-            "last_interruption_date": interruption_datetime
-        })
-        return {"message": f"Coleta inicial concluída parcialmente. O restante será processado automaticamente em segundo plano."}
-
-    return {"message": "Coleta inicial completa concluída com sucesso."}
+    return {"message": "A coleta de dados inicial foi iniciada em segundo plano."}
 
 
-@router.post("/monitor/run/historical-scheduled", status_code=status.HTTP_200_OK, tags=["Monitor"])
-def run_scheduled_historical_monitoring():
+@router.post("/monitor/run/historical-scheduled", status_code=status.HTTP_202_ACCEPTED, tags=["Monitor"])
+def run_scheduled_historical_monitoring(background_tasks: BackgroundTasks):
     """
-    Continua a execução da coleta de dados históricos.
-    Projetado para ser acionado por um scheduler (ex: Google Cloud Scheduler).
+    Continua a execução da coleta de dados históricos em segundo plano.
     """
-    search_terms: SearchTerms = _get_platform_search_terms()
-    session = _create_session_with_retries()
-
-    interrupt_doc_id, last_interruption, original_start_date = _get_historical_run_status()
-
-    # Se nenhuma interrupção explícita for encontrada, o sistema verifica o progresso
-    # real para se recuperar de estados inesperados.
-    if not (interrupt_doc_id and last_interruption and original_start_date):
-        oldest_run_query = db.collection("monitor_runs") \
-            .where("search_type", "==", "historico") \
-            .order_by("range_start", direction=firestore.Query.ASCENDING) \
-            .limit(1)
-        
-        oldest_run_docs = list(oldest_run_query.stream())
-
-        if not oldest_run_docs:
-            return {"message": "Nenhuma coleta histórica iniciada para continuar."}
-
-        oldest_run_data = oldest_run_docs[0].to_dict()
-        oldest_processed_dt = oldest_run_data.get("range_start")
-        original_start_val = oldest_run_data.get("historical_run_start_date")
-
-        if not oldest_processed_dt or not original_start_val:
-            return {"message": "Coleta histórica encontrada com dados de estado inválidos."}
-
-        oldest_processed_date = oldest_processed_dt.date()
-        
-        if isinstance(original_start_val, str):
-            original_start_date = date.fromisoformat(original_start_val)
-        elif isinstance(original_start_val, datetime):
-            original_start_date = original_start_val.date()
-        else:
-            original_start_date = original_start_val
-
-        if oldest_processed_date > original_start_date:
-            # Define a próxima data a ser processada como o dia anterior ao mais antigo já processado.
-            last_interruption = oldest_processed_date - timedelta(days=1)
-        else:
-            return {"message": "Coleta histórica já concluída."}
-
-    # Se um documento de interrupção foi encontrado, limpa o marcador.
-    if interrupt_doc_id:
-        db.collection("monitor_runs").document(interrupt_doc_id).update({"last_interruption_date": None})
-
-    end_date = last_interruption
-    start_date = original_start_date
+    background_tasks.add_task(_task_run_scheduled_historical)
+    return {"message": "Coleta histórica agendada iniciada em segundo plano."}
 
 
-    if start_date > end_date:
-        return {"message": "Coleta histórica já está atualizada."}
-
-    current_date = end_date
-    last_saved_run_id = None
-    interrupted = False
-
-    while current_date >= start_date and not interrupted:
-        for group_name in ["brand", "competitors"]:
-            remaining_quota = _get_remaining_quota()
-            if remaining_quota == 0:
-                interrupted = True
-                break
-            pages_to_fetch = min(10, remaining_quota)
-            term_group: TermGroup = getattr(search_terms, group_name)
-            query_string = _build_query_string(term_group)
-            date_range = {"start": current_date, "end": current_date}
-            run_id = db.collection("monitor_runs").document().id
-            search_results_raw = []
-            if query_string.strip():
-                search_results_raw, requests_made = _perform_paginated_google_search(
-                    session, query_string, pages_to_fetch, run_id, group_name, date_range
-                )
-                _increment_quota(requests_made)
-            
-            monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
-            start_of_current_date = datetime.combine(current_date, datetime.min.time())
-            
-            run_metadata = MonitorRun(
-                search_terms_query=query_string,
-                search_group=group_name,
-                search_type="historico",
-                total_results_found=len(monitor_results),
-                range_start=start_of_current_date,
-                range_end=start_of_current_date,
-                historical_run_start_date=original_start_date
-            )
-            _save_monitor_data(run_metadata, monitor_results, run_id=run_id)
-            last_saved_run_id = run_id
-        
-        if not interrupted:
-            current_date -= timedelta(days=1)
-
-    if interrupted and last_saved_run_id:
-        interruption_datetime = datetime.combine(current_date, datetime.min.time())
-        db.collection("monitor_runs").document(last_saved_run_id).update({
-            "last_interruption_date": interruption_datetime
-        })
-        return {"message": f"Coleta agendada concluída parcialmente. Limite de requisições atingido. Próxima execução continuará de {current_date.isoformat()}."}
-
-    return {"message": "Coleta histórica agendada concluída com sucesso."}
+@router.get("/monitor/system-status", response_model=SystemStatus, tags=["Monitor"])
+def get_system_status(current_user: dict = Depends(get_current_user)):
+    """Retorna o status atual do sistema de monitoramento."""
+    try:
+        doc_ref = db.collection(PLATFORM_CONFIG_COL).document(SYSTEM_STATUS_DOC)
+        doc = doc_ref.get()
+        if doc.exists:
+            return SystemStatus(**doc.to_dict())
+        return SystemStatus() # Retorna o padrão se não existir
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar status: {e}")
 
 
 @router.get("/monitor/historical-status", response_model=HistoricalStatusResponse, tags=["Monitor"])
@@ -715,7 +742,9 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
         
         # 4. Get other stats
         total_runs = len(all_runs)
-        total_requests = db.collection("monitor_logs").count().get()[0][0].value
+        total_requests_query = db.collection("monitor_logs").count()
+        total_requests = total_requests_query.get()[0][0].value
+
         runs_by_type = {"relevante": 0, "historico": 0, "continuo": 0}
         for run in all_runs:
             if run.search_type in runs_by_type:
@@ -873,20 +902,25 @@ def delete_all_monitor_data(current_user: dict = Depends(get_current_admin_user)
         "monitor_runs",
         "monitor_results",
         "monitor_logs",
-        QUOTA_COLLECTION
+        QUOTA_COLLECTION,
+        f"{PLATFORM_CONFIG_COL}/{SYSTEM_STATUS_DOC}" # Deleta o documento de status também
     ]
     
     total_docs_deleted = 0
     
     for collection_name in collections_to_delete:
         try:
-            collection_ref = db.collection(collection_name)
-            deleted_count = _delete_collection_in_batches(collection_ref, 200)
-            print(f"Successfully deleted {deleted_count} documents from '{collection_name}'.")
-            total_docs_deleted += deleted_count
+            if "/" in collection_name: # Trata a exclusão de um documento específico
+                db.document(collection_name).delete()
+                print(f"Successfully deleted document '{collection_name}'.")
+                total_docs_deleted += 1
+            else:
+                collection_ref = db.collection(collection_name)
+                deleted_count = _delete_collection_in_batches(collection_ref, 200)
+                print(f"Successfully deleted {deleted_count} documents from '{collection_name}'.")
+                total_docs_deleted += deleted_count
         except Exception as e:
-            print(f"Error deleting collection '{collection_name}': {e}")
-            # Continua para a próxima coleção mesmo em caso de erro
+            print(f"Error deleting '{collection_name}': {e}")
             continue
 
     return {"message": f"Limpeza completa concluída. Total de {total_docs_deleted} documentos removidos."}

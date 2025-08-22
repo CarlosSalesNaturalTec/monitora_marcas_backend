@@ -10,6 +10,7 @@ class MonitorResultItem(BaseModel):
     snippet: str
     htmlSnippet: str
     pagemap: Optional[dict[str, Any]] = None
+    origin: str = "google_cse"
     
     # Gera um ID baseado no hash do link para evitar duplicatas
     def generate_id(self) -> str:
@@ -22,10 +23,12 @@ class MonitorRun(BaseModel):
     search_type: Literal["relevante", "historico", "continuo"] = "relevante"
     total_results_found: int
     collected_at: datetime = Field(default_factory=datetime.utcnow)
+    status: Literal["in_progress", "completed", "failed"] = Field(default="in_progress")
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
     last_interruption_date: Optional[datetime] = None
     historical_run_start_date: Optional[date] = None
+    origin: str = "google_cse"
 
 class MonitorData(BaseModel):
     run_metadata: MonitorRun
@@ -51,6 +54,7 @@ class MonitorLog(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
+    origin: str = "google_cse"
 
 
 # --- Schemas for Summary View ---
@@ -112,3 +116,12 @@ class UnifiedMonitorResult(BaseModel):
     collected_at: datetime
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
+
+# --- Schema for System Status ---
+
+class SystemStatus(BaseModel):
+    is_monitoring_running: bool = False
+    current_task: Optional[str] = None
+    task_start_time: Optional[datetime] = None
+    last_completion_time: Optional[datetime] = None
+    message: Optional[str] = None
