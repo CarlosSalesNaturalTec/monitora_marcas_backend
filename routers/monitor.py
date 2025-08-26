@@ -81,7 +81,7 @@ def _get_platform_search_terms() -> SearchTerms:
         print(f"CRITICAL: Erro ao buscar os termos de pesquisa: {e}")
         return SearchTerms()
 
-def _log_request(run_id: str, search_group: str, page: int, results_count: int, new_urls_saved: int, date_for_log: Optional[date] = None):
+def _log_request(run_id: str, search_group: str, page: int, results_count: int, new_urls_saved: int, search_type: str, date_for_log: Optional[date] = None):
     """Salva um log de uma única requisição da API do Google."""
     try:
         log_ref = db.collection("monitor_logs").document()
@@ -97,6 +97,7 @@ def _log_request(run_id: str, search_group: str, page: int, results_count: int, 
             new_urls_saved=new_urls_saved,
             range_start=start_of_day,
             range_end=start_of_day,
+            search_type=search_type
         )
         
         log_ref.set(log_data.dict())
@@ -212,7 +213,7 @@ def _task_run_continuous_monitoring():
                 search_results = response.json()
                 items_raw = search_results.get("items", [])
                 if not items_raw:
-                    _log_request(run_id, group_name, page + 1, 0, 0)
+                    _log_request(run_id, group_name, page + 1, 0, 0, search_type="continuo")
                     break
                 results_page = [MonitorResultItem(**item) for item in items_raw if item.get("link")]
                 doc_refs = [db.collection("monitor_results").document(item.generate_id()) for item in results_page]
@@ -230,7 +231,7 @@ def _task_run_continuous_monitoring():
                     batch.commit()
                 new_urls_saved_count = len(new_items_to_save)
                 total_new_urls_for_group += new_urls_saved_count
-                _log_request(run_id, group_name, page + 1, len(items_raw), new_urls_saved_count)
+                _log_request(run_id, group_name, page + 1, len(items_raw), new_urls_saved_count, search_type="continuo")
 
             # Atualiza a run com o total e o status "completed"
             run_ref.update({
@@ -263,7 +264,7 @@ def _task_run_initial_monitoring(start_date_iso: str):
             if not query_string.strip(): continue
             
             run_ref = db.collection("monitor_runs").document()
-            search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name)
+            search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, "relevante")
             _increment_quota(requests_made)
             monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
             
@@ -299,7 +300,7 @@ def _task_run_initial_monitoring(start_date_iso: str):
                     run_ref = db.collection("monitor_runs").document()
                     search_results_raw = []
                     if query_string.strip():
-                        search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, date_range)
+                        search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, "historico", date_range)
                         _increment_quota(requests_made)
                     
                     monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
@@ -383,7 +384,7 @@ def _task_run_scheduled_historical():
                 run_ref = db.collection("monitor_runs").document()
                 search_results_raw = []
                 if query_string.strip():
-                    search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, date_range)
+                    search_results_raw, requests_made = _perform_paginated_google_search(session, query_string, pages_to_fetch, run_ref.id, group_name, "historico", date_range)
                     _increment_quota(requests_made)
                 
                 monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
@@ -430,6 +431,7 @@ def _perform_paginated_google_search(
     pages_to_fetch: int,
     run_id: str,
     search_group: str,
+    search_type: str,
     date_range: Optional[Dict[str, date]] = None
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
@@ -480,7 +482,8 @@ def _perform_paginated_google_search(
                 page=page + 1,
                 results_count=len(items),
                 new_urls_saved=len(items),
-                date_for_log=current_day_for_log
+                date_for_log=current_day_for_log,
+                search_type=search_type
             )
 
             if not items:
@@ -763,15 +766,23 @@ def get_monitor_summary(current_user: dict = Depends(get_current_user)):
                 break
 
         # 6. Prepare logs for the response
-        latest_logs_summary = [
-            RequestLog(
-                run_id=log.run_id,
-                search_group=log.search_group,
-                page=log.page,
-                results_count=log.results_count,
-                timestamp=log.timestamp
-            ) for log in recent_logs
-        ]
+        latest_logs_summary = []
+        for log in recent_logs:
+            run_info = runs_map.get(log.run_id)
+            if run_info:
+                # Fallback for old logs that don't have search_type
+                stype = log.search_type if log.search_type else run_info.search_type
+                latest_logs_summary.append(
+                    RequestLog(
+                        run_id=log.run_id,
+                        search_group=log.search_group,
+                        page=log.page,
+                        results_count=log.results_count,
+                        timestamp=log.timestamp,
+                        search_type=stype,
+                        origin=log.origin
+                    )
+                )
 
         return MonitorSummary(
             total_runs=total_runs,
@@ -822,7 +833,7 @@ def get_monitor_run_details(run_id: str, current_user: dict = Depends(get_curren
 @router.get("/monitor/all-results", response_model=List[UnifiedMonitorResult], tags=["Monitor"])
 def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
     """
-    Busca todos os resultados de monitoramento, unificando-os com os metadados
+    Busca os últimos 200 resultados de monitoramento, unificando-os com os metadados
     de suas respectivas execuções (runs) para uma exibição consolidada.
     """
     try:
@@ -850,6 +861,7 @@ def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
                 title=result_data.get("title", ""),
                 snippet=result_data.get("snippet", ""),
                 htmlSnippet=result_data.get("htmlSnippet", ""),
+                status=result_data.get("status", "pending"),
                 search_type=run_info.search_type,
                 search_group=run_info.search_group,
                 collected_at=run_info.collected_at,
@@ -861,7 +873,7 @@ def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
         # Ordena os resultados pela data do evento (range_start para histórico/contínuo, collected_at para relevante), do mais novo para o mais antigo
         unified_results.sort(key=lambda x: x.range_start if x.range_start else x.collected_at, reverse=True)
         
-        return unified_results
+        return unified_results[:200]
 
     except Exception as e:
         print(f"Error fetching all monitor results: {e}")

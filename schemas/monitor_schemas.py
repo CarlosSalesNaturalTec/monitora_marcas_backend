@@ -11,6 +11,7 @@ class MonitorResultItem(BaseModel):
     htmlSnippet: str
     pagemap: Optional[dict[str, Any]] = None
     origin: str = "google_cse"
+    status: str = "pending"
     
     # Gera um ID baseado no hash do link para evitar duplicatas
     def generate_id(self) -> str:
@@ -54,6 +55,7 @@ class MonitorLog(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
+    search_type: Optional[Literal["relevante", "historico", "continuo"]] = None
     origin: str = "google_cse"
 
 
@@ -76,6 +78,8 @@ class RequestLog(BaseModel):
     page: int
     results_count: int
     timestamp: datetime
+    search_type: Literal["relevante", "historico", "continuo"]
+    origin: str
 
 class MonitorSummary(BaseModel):
     """Agrega todos os dados de resumo e logs para o dashboard."""
@@ -109,6 +113,7 @@ class UnifiedMonitorResult(BaseModel):
     title: str
     snippet: str
     htmlSnippet: str
+    status: str
     
     # From MonitorRun
     search_type: Literal["relevante", "historico", "continuo"]
