@@ -82,7 +82,7 @@ class RequestLog(BaseModel):
     origin: str
 
 class MonitorSummary(BaseModel):
-    """Agrega todos os dados de resumo e logs para o dashboard."""
+    """Agrega todos os dados de Requisições para o dashboard."""
     total_runs: int
     total_requests: int
     total_results_saved: int
