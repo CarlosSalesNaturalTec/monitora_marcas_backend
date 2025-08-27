@@ -167,7 +167,7 @@ def _task_run_continuous_monitoring():
     """Tarefa de background para a coleta contínua."""
     start_time = datetime.utcnow()
     log_data = {
-        "task": "search_continuous",
+        "task": "Busca Contínua",
         "start_time": start_time,
         "status": "in_progress",
         "processed_count": 0
@@ -252,7 +252,8 @@ def _task_run_continuous_monitoring():
         log_ref.update({
             "status": "completed",
             "end_time": datetime.utcnow(),
-            "processed_count": total_processed_for_task
+            "processed_count": total_processed_for_task,
+            "message": f"{total_processed_for_task} novos resultados encontrados."
         })
             
     except Exception as e:
@@ -354,7 +355,7 @@ def _task_run_scheduled_historical():
     """Tarefa de background para a coleta histórica agendada."""
     start_time = datetime.utcnow()
     log_data = {
-        "task": "search_historical",
+        "task": "Busca Histórica",
         "start_time": start_time,
         "status": "in_progress",
         "processed_count": 0
@@ -444,7 +445,8 @@ def _task_run_scheduled_historical():
         log_ref.update({
             "status": "completed",
             "end_time": datetime.utcnow(),
-            "processed_count": total_processed_for_task
+            "processed_count": total_processed_for_task,
+            "message": f"Busca de {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')} concluída."
         })
 
     except Exception as e:
