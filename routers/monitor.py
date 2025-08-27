@@ -883,6 +883,66 @@ def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
         )
 
 
+@router.get("/monitor/results-by-status/{status}", response_model=List[UnifiedMonitorResult], tags=["Monitor"])
+def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_current_user)):
+    """
+    Busca resultados de monitoramento filtrados por um status específico.
+    """
+    try:
+        # 1. Validar o status para evitar queries indesejadas
+        allowed_statuses = ["pending", "reprocess", "scraper_failed", "scraper_skipped", "relevance_failed"]
+        if status not in allowed_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Status inválido. Use um dos seguintes: {', '.join(allowed_statuses)}"
+            )
+
+        # 2. Buscar todas as execuções e mapeá-las por ID para enriquecimento
+        runs_ref = db.collection("monitor_runs").stream()
+        runs_map = {doc.id: MonitorRun(**doc.to_dict()) for doc in runs_ref}
+
+        # 3. Buscar resultados filtrando pelo status
+        results_ref = db.collection("monitor_results").where("status", "==", status).limit(200).stream()
+        
+        unified_results = []
+        for result_doc in results_ref:
+            result_data = result_doc.to_dict()
+            run_id = result_data.get("run_id")
+            
+            run_info = runs_map.get(run_id)
+            if not run_info:
+                continue # Pula resultados órfãos
+
+            # Combina os dados do resultado com os da execução
+            unified_item = UnifiedMonitorResult(
+                run_id=run_id,
+                link=result_data.get("link", ""),
+                displayLink=result_data.get("displayLink", ""),
+                title=result_data.get("title", ""),
+                snippet=result_data.get("snippet", ""),
+                htmlSnippet=result_data.get("htmlSnippet", ""),
+                status=result_data.get("status", "pending"),
+                search_type=run_info.search_type,
+                search_group=run_info.search_group,
+                collected_at=run_info.collected_at,
+                range_start=run_info.range_start,
+                range_end=run_info.range_end
+            )
+            unified_results.append(unified_item)
+            
+        # Ordena os resultados pela data do evento
+        unified_results.sort(key=lambda x: x.range_start if x.range_start else x.collected_at, reverse=True)
+        
+        return unified_results
+
+    except Exception as e:
+        print(f"Error fetching monitor results by status '{status}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar resultados do monitoramento por status: {e}"
+        )
+
+
 def _delete_collection_in_batches(collection_ref, batch_size: int) -> int:
     """Exclui todos os documentos de uma coleção em lotes."""
     total_deleted = 0
