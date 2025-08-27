@@ -105,13 +105,13 @@ gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social
   - Permite alteração de senha a partir da informação do email do usuário e a nova senha.
   - Permite a exclusão de usuários cadastrados a partir da informação do email a ser excluido.
 
-- **Sistema/Configurações (rota `/terms`)**: Página para o gerenciamento centralizado dos termos de pesquisa de toda a plataforma.
+- **Sistema/Termos de Pesquisa (rota `/terms`)**: Página para o gerenciamento centralizado dos termos de pesquisa de toda a plataforma.
   - Permite o CRUD (Criar, Ler, Atualizar, Deletar) de termos principais, sinônimos e termos a excluir.
   - A interface é dividida em abas para "Marca" e "Concorrentes".
   - O acesso para edição é restrito a usuários com a permissão `ADM`. Usuários não-administradores visualizam os termos em modo somente leitura.
   - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
 
-- **Sistema/Monitorar (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados. O fluxo foi unificado para simplificar o processo e garantir a cobertura completa dos dados.
+- **Sistema/Buscas (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados. O fluxo foi unificado para simplificar o processo e garantir a cobertura completa dos dados.
   - **Estrutura de Dados no Firestore**:
     - `monitor_runs`: Coleção que armazena os metadados de cada execução (o quê, quando, como foi buscado).
     - `monitor_results`: Armazena cada resultado individual (URL, snippet) encontrado, com um ID baseado no hash da URL para evitar duplicatas.

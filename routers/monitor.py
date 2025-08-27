@@ -940,7 +940,10 @@ def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_
     """
     try:
         # 1. Validar o status para evitar queries indesejadas
-        allowed_statuses = ["pending", "reprocess", "scraper_failed", "scraper_skipped", "relevance_failed"]
+        allowed_statuses = [
+            "pending", "reprocess", "scraper_failed", "scraper_skipped", 
+            "relevance_failed", "nlp_ok", "nlp_error"
+        ]
         if status not in allowed_statuses:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
