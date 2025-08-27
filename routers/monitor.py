@@ -165,6 +165,15 @@ def _update_system_status(is_running: bool, task: Optional[str] = None, message:
 
 def _task_run_continuous_monitoring():
     """Tarefa de background para a coleta contínua."""
+    start_time = datetime.utcnow()
+    log_data = {
+        "task": "search_continuous",
+        "start_time": start_time,
+        "status": "in_progress",
+        "processed_count": 0
+    }
+    _, log_ref = db.collection("system_logs").add(log_data)
+    total_processed_for_task = 0
     try:
         _update_system_status(True, "Coleta Contínua", "Coleta de dados em andamento.")
         
@@ -238,10 +247,23 @@ def _task_run_continuous_monitoring():
                 "total_results_found": total_new_urls_for_group,
                 "status": "completed"
             })
+            total_processed_for_task += total_new_urls_for_group
+        
+        log_ref.update({
+            "status": "completed",
+            "end_time": datetime.utcnow(),
+            "processed_count": total_processed_for_task
+        })
             
     except Exception as e:
         print(f"ERRO na tarefa de coleta contínua: {e}")
         _update_system_status(False, "Coleta Contínua", f"Falha na coleta contínua: {e}")
+        log_ref.update({
+            "status": "failed",
+            "end_time": datetime.utcnow(),
+            "processed_count": total_processed_for_task,
+            "error_message": str(e)
+        })
     finally:
         _update_system_status(False, "Coleta Contínua", "Coleta contínua finalizada.")
 
@@ -330,6 +352,15 @@ def _task_run_initial_monitoring(start_date_iso: str):
 
 def _task_run_scheduled_historical():
     """Tarefa de background para a coleta histórica agendada."""
+    start_time = datetime.utcnow()
+    log_data = {
+        "task": "search_historical",
+        "start_time": start_time,
+        "status": "in_progress",
+        "processed_count": 0
+    }
+    _, log_ref = db.collection("system_logs").add(log_data)
+    total_processed_for_task = 0
     try:
         _update_system_status(True, "Coleta Histórica Agendada", "Coleta de dados em andamento.")
         search_terms = _get_platform_search_terms()
@@ -342,12 +373,14 @@ def _task_run_scheduled_historical():
             oldest_run_docs = list(oldest_run_query.stream())
             if not oldest_run_docs:
                 _update_system_status(False, "Coleta Histórica Agendada", "Nenhuma coleta histórica para continuar.")
+                log_ref.update({"status": "completed", "end_time": datetime.utcnow(), "processed_count": 0, "message": "Nenhuma coleta histórica para continuar."})
                 return
             oldest_run_data = oldest_run_docs[0].to_dict()
             oldest_processed_dt = oldest_run_data.get("range_start")
             original_start_val = oldest_run_data.get("historical_run_start_date")
             if not oldest_processed_dt or not original_start_val:
                 _update_system_status(False, "Coleta Histórica Agendada", "Dados de estado inválidos.")
+                log_ref.update({"status": "failed", "end_time": datetime.utcnow(), "processed_count": 0, "error_message": "Dados de estado inválidos."})
                 return
             oldest_processed_date = oldest_processed_dt.date()
             original_start_date = date.fromisoformat(original_start_val) if isinstance(original_start_val, str) else (original_start_val.date() if isinstance(original_start_val, datetime) else original_start_val)
@@ -355,6 +388,7 @@ def _task_run_scheduled_historical():
                 last_interruption = oldest_processed_date - timedelta(days=1)
             else:
                 _update_system_status(False, "Coleta Histórica Agendada", "Coleta histórica concluída.")
+                log_ref.update({"status": "completed", "end_time": datetime.utcnow(), "processed_count": 0, "message": "Coleta histórica concluída."})
                 return
 
         if interrupt_doc_id:
@@ -364,6 +398,7 @@ def _task_run_scheduled_historical():
         start_date = original_start_date
         if start_date > end_date:
             _update_system_status(False, "Coleta Histórica Agendada", "Coleta histórica já está atualizada.")
+            log_ref.update({"status": "completed", "end_time": datetime.utcnow(), "processed_count": 0, "message": "Coleta histórica já está atualizada."})
             return
 
         current_date = end_date
@@ -388,6 +423,7 @@ def _task_run_scheduled_historical():
                     _increment_quota(requests_made)
                 
                 monitor_results = [MonitorResultItem(**item) for item in search_results_raw if item.get("link")]
+                total_processed_for_task += len(monitor_results)
                 start_of_current_date = datetime.combine(current_date, datetime.min.time())
                 run_metadata = MonitorRun(
                     search_terms_query=query_string, search_group=group_name, search_type="historico",
@@ -404,10 +440,22 @@ def _task_run_scheduled_historical():
         if interrupted and last_saved_run_id:
             interruption_datetime = datetime.combine(current_date, datetime.min.time())
             db.collection("monitor_runs").document(last_saved_run_id).update({"last_interruption_date": interruption_datetime})
+        
+        log_ref.update({
+            "status": "completed",
+            "end_time": datetime.utcnow(),
+            "processed_count": total_processed_for_task
+        })
 
     except Exception as e:
         print(f"ERRO na tarefa de coleta histórica agendada: {e}")
         _update_system_status(False, "Coleta Histórica Agendada", f"Falha na coleta: {e}")
+        log_ref.update({
+            "status": "failed",
+            "end_time": datetime.utcnow(),
+            "processed_count": total_processed_for_task,
+            "error_message": str(e)
+        })
     finally:
         _update_system_status(False, "Coleta Histórica Agendada", "Coleta histórica agendada finalizada.")
 
