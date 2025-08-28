@@ -24,7 +24,7 @@ router = APIRouter()
 
 # --- Constantes ---
 QUOTA_COLLECTION = "daily_quotas"
-MAX_DAILY_REQUESTS = 100
+MAX_DAILY_REQUESTS = 2
 SYSTEM_STATUS_DOC = "system_status"
 PLATFORM_CONFIG_COL = "platform_config"
 
@@ -1027,6 +1027,7 @@ def delete_all_monitor_data(current_user: dict = Depends(get_current_admin_user)
         "monitor_runs",
         "monitor_results",
         "monitor_logs",
+        "system_logs",
         QUOTA_COLLECTION,
         f"{PLATFORM_CONFIG_COL}/{SYSTEM_STATUS_DOC}" # Deleta o documento de status também
     ]
