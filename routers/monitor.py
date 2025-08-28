@@ -942,7 +942,7 @@ def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_
         # 1. Validar o status para evitar queries indesejadas
         allowed_statuses = [
             "pending", "reprocess", "scraper_failed", "scraper_skipped", 
-            "relevance_failed", "nlp_ok", "nlp_error"
+            "relevance_failed", "nlp_ok", "nlp_error", "scraper_ok"
         ]
         if status not in allowed_statuses:
             raise HTTPException(
