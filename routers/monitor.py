@@ -24,7 +24,7 @@ router = APIRouter()
 
 # --- Constantes ---
 QUOTA_COLLECTION = "daily_quotas"
-MAX_DAILY_REQUESTS = 2
+MAX_DAILY_REQUESTS = 100
 SYSTEM_STATUS_DOC = "system_status"
 PLATFORM_CONFIG_COL = "platform_config"
 
