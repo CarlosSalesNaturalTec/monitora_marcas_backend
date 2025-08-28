@@ -14,7 +14,7 @@ from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
     HistoricalRunRequest, HistoricalMonitorData, MonitorLog, MonitorSummary, 
     RunSummary, RequestLog, UnifiedMonitorResult, HistoricalStatusResponse,
-    UpdateHistoricalStartDateRequest, SystemStatus, ScraperStats
+    UpdateHistoricalStartDateRequest, SystemStatus, ScraperStats, NlpStats
 )
 from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
@@ -1029,6 +1029,58 @@ def get_scraper_stats(current_user: dict = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao buscar estatísticas do scraper: {e}"
+        )
+
+
+def _delete_collection_in_batches(collection_ref, batch_size: int) -> int:
+    """Exclui todos os documentos de uma coleção em lotes."""
+    total_deleted = 0
+    while True:
+        docs = list(collection_ref.limit(batch_size).stream())
+        if not docs:
+            break
+
+        batch = db.batch()
+        for doc in docs:
+            batch.delete(doc.reference)
+        
+        batch.commit()
+        
+        total_deleted += len(docs)
+    
+    return total_deleted
+
+
+@router.get("/monitor/nlp-stats", response_model=NlpStats, tags=["Monitor"])
+def get_nlp_stats(current_user: dict = Depends(get_current_user)):
+    """
+    Retorna a contagem de documentos para cada status relevante do NLP.
+    """
+    try:
+        statuses_to_count = [
+            "nlp_ok",
+            "nlp_error",
+        ]
+        
+        counts = {}
+        
+        for status_val in statuses_to_count:
+            # The .count() method returns an aggregation query
+            agg_query = db.collection("monitor_results").where("status", "==", status_val).count()
+            # The .get() method on an aggregation query returns the result
+            count_result = agg_query.get()
+            # The result is a list of aggregation results, in this case, just one.
+            if count_result:
+                counts[status_val] = count_result[0][0].value
+            else:
+                counts[status_val] = 0
+                
+        return NlpStats(counts=counts)
+    except Exception as e:
+        print(f"Error fetching nlp stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar estatísticas do NLP: {e}"
         )
 
 

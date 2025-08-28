@@ -133,3 +133,7 @@ class SystemStatus(BaseModel):
 
 class ScraperStats(BaseModel):
     counts: Dict[str, int]
+
+
+class NlpStats(BaseModel):
+    counts: Dict[str, int]
