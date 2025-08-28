@@ -14,7 +14,7 @@ from schemas.monitor_schemas import (
     MonitorResultItem, MonitorRun, MonitorData, LatestMonitorData, 
     HistoricalRunRequest, HistoricalMonitorData, MonitorLog, MonitorSummary, 
     RunSummary, RequestLog, UnifiedMonitorResult, HistoricalStatusResponse,
-    UpdateHistoricalStartDateRequest, SystemStatus
+    UpdateHistoricalStartDateRequest, SystemStatus, ScraperStats
 )
 from auth import get_current_user, get_current_admin_user
 from firebase_admin_init import db
@@ -993,6 +993,42 @@ def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao buscar resultados do monitoramento por status: {e}"
+        )
+
+
+@router.get("/monitor/scraper-stats", response_model=ScraperStats, tags=["Monitor"])
+def get_scraper_stats(current_user: dict = Depends(get_current_user)):
+    """
+    Retorna a contagem de documentos para cada status relevante do scraper.
+    """
+    try:
+        statuses_to_count = [
+            "pending",
+            "scraper_skipped",
+            "relevance_failed",
+            "scraper_failed",
+            "scraper_ok",
+        ]
+        
+        counts = {}
+        
+        for status_val in statuses_to_count:
+            # The .count() method returns an aggregation query
+            agg_query = db.collection("monitor_results").where("status", "==", status_val).count()
+            # The .get() method on an aggregation query returns the result
+            count_result = agg_query.get()
+            # The result is a list of aggregation results, in this case, just one.
+            if count_result:
+                counts[status_val] = count_result[0][0].value
+            else:
+                counts[status_val] = 0
+                
+        return ScraperStats(counts=counts)
+    except Exception as e:
+        print(f"Error fetching scraper stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao buscar estatísticas do scraper: {e}"
         )
 
 

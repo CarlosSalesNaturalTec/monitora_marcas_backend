@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any, Literal
+from typing import List, Optional, Any, Literal, Dict
 from datetime import datetime, date
 import hashlib
 
@@ -130,3 +130,6 @@ class SystemStatus(BaseModel):
     task_start_time: Optional[datetime] = None
     last_completion_time: Optional[datetime] = None
     message: Optional[str] = None
+
+class ScraperStats(BaseModel):
+    counts: Dict[str, int]
