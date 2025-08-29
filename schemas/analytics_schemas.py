@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Dict
+from datetime import datetime
 
 class SentimentSummary(BaseModel):
     name: str
@@ -33,3 +34,10 @@ class SentimentComparisonItem(BaseModel):
     positivo: int
     negativo: int
     neutro: int
+
+class AttackFeedItem(BaseModel):
+    link: str
+    title: str
+    displayLink: str
+    snippet: str
+    publish_date: datetime

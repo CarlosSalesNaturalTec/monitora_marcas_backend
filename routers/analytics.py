@@ -7,7 +7,7 @@ import logging
 
 from schemas.analytics_schemas import (
     SentimentSummary, SentimentOverTimePoint, EntityCloud, Entity, ActiveSource,
-    ShareOfVoicePoint, SentimentComparisonItem
+    ShareOfVoicePoint, SentimentComparisonItem, AttackFeedItem
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -290,4 +290,60 @@ def get_sentiment_comparison(
 
     except Exception as e:
         logger.error(f"Erro em get_sentiment_comparison: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+@router.get("/attack_feed", response_model=List[AttackFeedItem])
+def get_attack_feed(
+    days: int = Query(7, description="Período em dias para a análise"),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Retorna menções negativas que citam tanto a marca quanto concorrentes.
+    """
+    try:
+        # 1. Buscar os termos de pesquisa
+        terms_doc = db.collection('search_terms').document('user_defined_terms').get()
+        if not terms_doc.exists:
+            return []
+        
+        terms_data = terms_doc.to_dict()
+        brand_terms = set(terms_data.get('brand', {}).get('main_terms', []))
+        competitor_terms = set(terms_data.get('competitors', {}).get('main_terms', []))
+
+        if not brand_terms or not competitor_terms:
+            return []
+
+        # 2. Buscar documentos com sentimento negativo no período
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        query = db.collection('monitor_results') \
+                  .where('publish_date', '>=', start_date) \
+                  .where('publish_date', '<=', end_date) \
+                  .where('status', '==', 'nlp_ok')
+        
+        docs = query.stream()
+
+        attack_feed = []
+        for doc in docs:
+            data = doc.to_dict()
+            analysis = data.get('google_nlp_analysis')
+
+            if analysis and isinstance(analysis, dict) and analysis.get('sentiment') == 'negativo':
+                entities = set(analysis.get('entities', []))
+                
+                # 3. Verificar se há coocorrência de termos
+                mentions_brand = any(term in entities for term in brand_terms)
+                mentions_competitor = any(term in entities for term in competitor_terms)
+
+                if mentions_brand and mentions_competitor:
+                    attack_feed.append(AttackFeedItem(**data))
+        
+        # Ordena os resultados pelos mais recentes primeiro
+        attack_feed.sort(key=lambda x: x.publish_date, reverse=True)
+
+        return attack_feed[:50] # Limita a 50 resultados
+
+    except Exception as e:
+        logger.error(f"Erro em get_attack_feed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
