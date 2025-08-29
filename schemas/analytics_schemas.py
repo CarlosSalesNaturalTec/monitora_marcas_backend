@@ -18,3 +18,18 @@ class Entity(BaseModel):
 class EntityCloud(BaseModel):
     positive: List[Entity]
     negative: List[Entity]
+
+class ActiveSource(BaseModel):
+    source: str
+    mentions: int
+
+class ShareOfVoicePoint(BaseModel):
+    date: str
+    brand: int
+    competitors: int
+
+class SentimentComparisonItem(BaseModel):
+    name: str
+    positivo: int
+    negativo: int
+    neutro: int
