@@ -1,5 +1,5 @@
 # backend/schemas/analytics_schemas.py
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 
@@ -36,3 +36,29 @@ class MentionsResponse(BaseModel):
     """Schema de resposta para a lista paginada de menções."""
     total_pages: int
     mentions: List[Mention]
+
+# --- Schemas para a Aba 3: Inteligência de Google Trends ---
+
+class RisingQueryItem(BaseModel):
+    """Representa um item na resposta de 'rising queries'."""
+    query: str = Field(..., description="O termo de busca em ascensão.")
+    value: int = Field(..., description="O percentual de crescimento.")
+    formatted_value: str = Field(..., description="Valor formatado do crescimento, ex: '+1,850%' ou 'Breakout'.")
+
+class RisingQueriesResponse(BaseModel):
+    """Schema de resposta para o endpoint de buscas em ascensão."""
+    queries: List[RisingQueryItem]
+
+class TrendsDataPoint(BaseModel):
+    """Ponto de dados específico para a comparação de trends."""
+    date: str
+    value: int
+
+class TrendsComparisonItem(BaseModel):
+    """Representa a série temporal de interesse para um único termo."""
+    term: str
+    data: List[TrendsDataPoint]
+
+class TrendsComparisonResponse(BaseModel):
+    """Schema de resposta para o endpoint de comparação de interesse de busca."""
+    comparison_data: List[TrendsComparisonItem]
