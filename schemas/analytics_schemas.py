@@ -62,3 +62,29 @@ class TrendsComparisonItem(BaseModel):
 class TrendsComparisonResponse(BaseModel):
     """Schema de resposta para o endpoint de comparação de interesse de busca."""
     comparison_data: List[TrendsComparisonItem]
+
+# --- Schemas para a Aba 4: Análise de Sentimento ---
+
+class SentimentDistributionItem(BaseModel):
+    """Representa uma fatia no gráfico de distribuição de sentimento."""
+    sentiment: str = Field(..., description="Categoria do sentimento (e.g., 'positivo', 'negativo', 'neutro').")
+    count: int = Field(..., description="Número de menções com este sentimento.")
+
+class SentimentDistributionResponse(BaseModel):
+    """Schema de resposta para o endpoint de distribuição de sentimento."""
+    distribution: List[SentimentDistributionItem]
+
+class SentimentOverTimeDataPoint(BaseModel):
+    """Contagem de sentimentos para um dia específico."""
+    positive: int
+    negative: int
+    neutral: int
+
+class SentimentOverTimeItem(BaseModel):
+    """Representa a evolução do sentimento para um único dia."""
+    date: str
+    sentiments: SentimentOverTimeDataPoint
+
+class SentimentOverTimeResponse(BaseModel):
+    """Schema de resposta para o endpoint de evolução do sentimento no tempo."""
+    over_time_data: List[SentimentOverTimeItem]

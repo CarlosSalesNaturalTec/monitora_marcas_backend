@@ -19,7 +19,12 @@ from schemas.analytics_schemas import (
     RisingQueryItem,
     TrendsComparisonResponse,
     TrendsComparisonItem,
-    TrendsDataPoint
+    TrendsDataPoint,
+    SentimentDistributionResponse,
+    SentimentDistributionItem,
+    SentimentOverTimeResponse,
+    SentimentOverTimeItem,
+    SentimentOverTimeDataPoint
 )
 
 # Configuração básica de logging
@@ -56,7 +61,6 @@ async def get_mentions_over_time(db: firestore.Client, search_group: str, start_
 
 async def get_trends_over_time(db: firestore.Client, search_group: str, start_date: datetime, end_date: datetime) -> List[DataPoint]:
     """Busca e formata os dados de interesse de busca do Google Trends."""
-    # CORREÇÃO: Busca na coleção 'trends_terms' usando 'search_group' como ID do documento.
     terms_doc_ref = db.collection('trends_terms').document(search_group)
     terms_doc = terms_doc_ref.get()
     if not terms_doc.exists:
@@ -64,14 +68,12 @@ async def get_trends_over_time(db: firestore.Client, search_group: str, start_da
         return []
         
     terms_data = terms_doc.to_dict()
-    # O campo com os termos principais agora é 'terms'.
     main_terms = terms_data.get('terms', [])
     
     if not main_terms:
         logger.info(f"Nenhum termo principal encontrado para o grupo '{search_group}'.")
         return []
 
-    # Usa o primeiro termo da lista para buscar os dados de trends.
     target_term = main_terms[0]
 
     query = db.collection('google_trends_data') \
@@ -251,10 +253,8 @@ def get_rising_queries(
 ):
     """
     Endpoint para Buscas em Ascensão (Rising Queries).
-    Retorna os termos de busca que tiveram crescimento súbito.
     """
     try:
-        # CORREÇÃO: Busca na coleção 'trends_terms' usando 'search_group' como ID do documento.
         terms_doc_ref = db.collection('trends_terms').document(search_group)
         terms_doc = terms_doc_ref.get()
         if not terms_doc.exists:
@@ -304,7 +304,6 @@ async def get_trends_comparison(
 ):
     """
     Endpoint para Análise Comparativa de Interesse.
-    Compara o interesse de busca entre múltiplos termos.
     """
     try:
         end_date = datetime.utcnow()
@@ -348,4 +347,108 @@ async def get_trends_comparison(
 
     except Exception as e:
         logger.error(f"Erro em get_trends_comparison: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+# --- Endpoints para a Aba 4: Análise de Sentimento ---
+
+@router.get("/sentiment_distribution", response_model=SentimentDistributionResponse)
+def get_sentiment_distribution(
+    search_group: str = Query("brand", description="Grupo de busca ('brand' ou 'competitors')"),
+    days: int = Query(30, description="Período em dias para a análise"),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Endpoint para a Distribuição de Sentimento.
+    Retorna a contagem de menções positivas, negativas e neutras.
+    """
+    try:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        query = db.collection('monitor_results') \
+                  .where('search_group', '==', search_group) \
+                  .where('publish_date', '>=', start_date) \
+                  .where('publish_date', '<=', end_date) \
+                  .where('status', '==', 'nlp_ok')
+        
+        docs = query.stream()
+        
+        sentiment_counts = Counter()
+        for doc in docs:
+            analysis = doc.to_dict().get('google_nlp_analysis', {})
+            sentiment = analysis.get('sentiment', 'neutro') # 'positivo', 'negativo', 'neutro'
+            sentiment_counts[sentiment] += 1
+            
+        distribution = [
+            SentimentDistributionItem(sentiment=s, count=c) for s, c in sentiment_counts.items()
+        ]
+        
+        # Garante que todas as categorias sejam retornadas, mesmo que com contagem zero
+        sentiments_present = {item.sentiment for item in distribution}
+        for s in ['positivo', 'negativo', 'neutro']:
+            if s not in sentiments_present:
+                distribution.append(SentimentDistributionItem(sentiment=s, count=0))
+
+        return SentimentDistributionResponse(distribution=distribution)
+
+    except Exception as e:
+        logger.error(f"Erro em get_sentiment_distribution: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+
+@router.get("/sentiment_over_time", response_model=SentimentOverTimeResponse)
+def get_sentiment_over_time(
+    search_group: str = Query("brand", description="Grupo de busca ('brand' ou 'competitors')"),
+    days: int = Query(30, description="Período em dias para a análise"),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Endpoint para a Evolução do Sentimento no Tempo.
+    Retorna a contagem diária de menções por tipo de sentimento.
+    """
+    try:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        query = db.collection('monitor_results') \
+                  .where('search_group', '==', search_group) \
+                  .where('publish_date', '>=', start_date) \
+                  .where('publish_date', '<=', end_date) \
+                  .where('status', '==', 'nlp_ok')
+        
+        docs = query.stream()
+        
+        daily_sentiments = defaultdict(lambda: Counter())
+        
+        for doc in docs:
+            data = doc.to_dict()
+            publish_date = data.get('publish_date')
+            if publish_date:
+                date_str = publish_date.strftime('%Y-%m-%d')
+                analysis = data.get('google_nlp_analysis', {})
+                sentiment = analysis.get('sentiment', 'neutro')
+                daily_sentiments[date_str][sentiment] += 1
+
+        # Preenche os dias sem menções com zeros
+        date_range = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
+        
+        results = []
+        for day in date_range:
+            date_str = day.strftime('%Y-%m-%d')
+            counts = daily_sentiments[date_str]
+            results.append(
+                SentimentOverTimeItem(
+                    date=date_str,
+                    sentiments=SentimentOverTimeDataPoint(
+                        positive=counts.get('positivo', 0),
+                        negative=counts.get('negativo', 0),
+                        neutral=counts.get('neutro', 0)
+                    )
+                )
+            )
+            
+        return SentimentOverTimeResponse(over_time_data=sorted(results, key=lambda x: x.date))
+
+    except Exception as e:
+        logger.error(f"Erro em get_sentiment_over_time: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
