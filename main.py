@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
 
-from routers import users, terms, monitor, system_logs, analytics
+from routers import users, terms, monitor, system_logs, analytics, trends
 
 # --- FastAPI App Initialization ---
 
@@ -35,6 +35,7 @@ app.include_router(terms.router)
 app.include_router(monitor.router)
 app.include_router(system_logs.router)
 app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
+app.include_router(trends.router, tags=["Trends"])
 
 
 # --- Root Endpoint ---

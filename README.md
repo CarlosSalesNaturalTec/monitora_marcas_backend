@@ -98,6 +98,7 @@ O backend é o orquestrador central da plataforma.
 | **daily_quotas** | `/monitor` | Documento que controla o uso da cota diária de requisições. |
 | **system_logs** | `/monitor` | Registra o início, fim e status das tarefas agendadas (Scraper, NLP). |
 | **system_status** | `/monitor` | Documento único que armazena o estado atual do sistema (ex: "executando scraper"). |
+| **trends_terms** | `/trends` | Armazena os termos-chave para monitoramento no Google Trends. |
 
 ### 3.3. Módulos Externos (Scraper, NLP, etc.)
 
