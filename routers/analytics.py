@@ -1,176 +1,148 @@
+# backend/routers/analytics.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from google.cloud import firestore
 from typing import List
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timedelta
 import logging
+import asyncio
 
 from schemas.analytics_schemas import (
-    SentimentSummary, SentimentOverTimePoint, EntityCloud, Entity, ActiveSource,
-    ShareOfVoicePoint, SentimentComparisonItem, AttackFeedItem
+    CombinedViewResponse,
+    KpiResponse,
+    DataPoint
 )
 
+# Configuração básica de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 def get_db():
+    """Função de dependência para obter a instância do Firestore Client."""
     return firestore.Client()
 
-@router.get("/sentiment_summary", response_model=List[SentimentSummary])
-def get_sentiment_summary(
-    search_group: str = Query(..., description="Grupo de busca (ex: 'marca' ou 'concorrente')"),
-    days: int = Query(7, description="Período em dias para a análise"),
-    db: firestore.Client = Depends(get_db)
-):
-    """
-    Retorna um resumo da contagem de sentimentos para um determinado grupo de busca.
-    """
-    try:
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-
-        query = db.collection('monitor_results') \
-                  .where('search_group', '==', search_group) \
-                  .where('publish_date', '>=', start_date) \
-                  .where('publish_date', '<=', end_date) \
-                  .where('status', '==', 'nlp_ok')
-
-        docs = query.stream()
-
-        sentiment_counts = Counter()
-        for doc in docs:
-            data = doc.to_dict()
-            # Verificação de segurança para garantir que a estrutura de dados exista
-            analysis = data.get('google_nlp_analysis')
-            if analysis and isinstance(analysis, dict):
-                sentiment = analysis.get('sentiment', 'neutro')
-                sentiment_counts[sentiment] += 1
-
-        return [{"name": sentiment, "value": count} for sentiment, count in sentiment_counts.items()]
-
-    except Exception as e:
-        logger.error(f"Erro em get_sentiment_summary: {e}", exc_info=True)
-        # Se for um erro de índice do Firestore, a exceção terá detalhes específicos.
-        # A mensagem de erro no log do backend é crucial.
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
-
-
-@router.get("/sentiment_over_time", response_model=List[SentimentOverTimePoint])
-def get_sentiment_over_time(
-    search_group: str = Query(..., description="Grupo de busca (ex: 'marca' ou 'concorrente')"),
-    days: int = Query(30, description="Período em dias para a análise"),
-    db: firestore.Client = Depends(get_db)
-):
-    """
-    Retorna a evolução do sentimento ao longo do tempo para um grupo de busca.
-    """
-    try:
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-
-        query = db.collection('monitor_results') \
-                  .where('search_group', '==', search_group) \
-                  .where('publish_date', '>=', start_date) \
-                  .where('publish_date', '<=', end_date) \
-                  .where('status', '==', 'nlp_ok')
-
-        docs = query.stream()
-
-        daily_sentiment = defaultdict(lambda: Counter())
-
-        for doc in docs:
-            data = doc.to_dict()
-            publish_date_obj = data.get('publish_date')
-            analysis = data.get('google_nlp_analysis')
-
-            # Apenas processa se os dados essenciais existirem
-            if publish_date_obj and analysis and isinstance(analysis, dict):
-                publish_date_str = publish_date_obj.strftime('%Y-%m-%d')
-                sentiment = analysis.get('sentiment', 'neutro')
-                daily_sentiment[publish_date_str][sentiment] += 1
-
-        results = []
-        date_range = [start_date + timedelta(days=x) for x in range(days + 1)]
-        
-        for day in date_range:
-            date_str = day.strftime('%Y-%m-%d')
-            counts = daily_sentiment.get(date_str, Counter())
-            results.append(
-                SentimentOverTimePoint(
-                    date=date_str,
-                    positivo=counts.get('positivo', 0),
-                    negativo=counts.get('negativo', 0),
-                    neutro=counts.get('neutro', 0)
-                )
-            )
-        
-        return sorted(results, key=lambda x: x.date)
-
-    except Exception as e:
-        logger.error(f"Erro em get_sentiment_over_time: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
-
-
-@router.get("/entity_cloud", response_model=EntityCloud)
-def get_entity_cloud(
-    search_group: str = Query(..., description="Grupo de busca (ex: 'marca' ou 'concorrente')"),
-    days: int = Query(7, description="Período em dias para a análise"),
-    db: firestore.Client = Depends(get_db)
-):
-    """
-    Retorna as entidades mais comuns para sentimentos positivos e negativos.
-    """
-    try:
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-
-        query = db.collection('monitor_results') \
-                  .where('search_group', '==', search_group) \
-                  .where('publish_date', '>=', start_date) \
-                  .where('publish_date', '<=', end_date) \
-                  .where('status', '==', 'nlp_ok')
-
-        docs = query.stream()
-
-        positive_entities = Counter()
-        negative_entities = Counter()
-
-        for doc in docs:
-            data = doc.to_dict()
-            analysis = data.get('google_nlp_analysis')
+async def get_mentions_over_time(db: firestore.Client, search_group: str, start_date: datetime, end_date: datetime) -> List[DataPoint]:
+    """Busca e agrega o volume de menções diárias."""
+    query = db.collection('monitor_results') \
+              .where('search_group', '==', search_group) \
+              .where('publish_date', '>=', start_date) \
+              .where('publish_date', '<=', end_date) \
+              .where('status', '==', 'nlp_ok')
+    
+    docs = query.stream()
+    
+    daily_counts = defaultdict(int)
+    for doc in docs:
+        data = doc.to_dict()
+        publish_date = data.get('publish_date')
+        if publish_date:
+            daily_counts[publish_date.strftime('%Y-%m-%d')] += 1
             
-            if analysis and isinstance(analysis, dict):
-                sentiment = analysis.get('sentiment')
-                entities = analysis.get('entities', [])
-                
-                if not isinstance(entities, list):
-                    continue # Pula se 'entities' não for uma lista
+    # Preenche os dias sem menções com zero
+    date_range = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
+    results = []
+    for day in date_range:
+        date_str = day.strftime('%Y-%m-%d')
+        results.append(DataPoint(date=date_str, value=daily_counts.get(date_str, 0)))
+        
+    return sorted(results, key=lambda x: x.date)
 
-                if sentiment == 'positivo':
-                    positive_entities.update(entities)
-                elif sentiment == 'negativo':
-                    negative_entities.update(entities)
+async def get_trends_over_time(db: firestore.Client, search_group: str, start_date: datetime, end_date: datetime) -> List[DataPoint]:
+    """Busca e formata os dados de interesse de busca do Google Trends."""
+    # Primeiro, busca os termos associados ao search_group
+    terms_doc_ref = db.collection('search_terms').document('user_defined_terms')
+    terms_doc = terms_doc_ref.get()
+    if not terms_doc.exists:
+        logger.warning(f"Documento de termos 'user_defined_terms' não encontrado.")
+        return []
+        
+    terms_data = terms_doc.to_dict()
+    # O search_group 'brand' corresponde a 'marca' e 'competitors' a 'concorrentes' no documento
+    group_key = 'brand' if search_group == 'brand' else 'competitors'
+    main_terms = terms_data.get(group_key, {}).get('main_terms', [])
+    
+    if not main_terms:
+        logger.info(f"Nenhum termo principal encontrado para o grupo '{search_group}'.")
+        return []
 
-        top_positive = [{"text": text, "value": count} for text, count in positive_entities.most_common(50)]
-        top_negative = [{"text": text, "value": count} for text, count in negative_entities.most_common(50)]
+    # Por simplicidade, vamos usar o primeiro termo principal para a busca de trends.
+    # Uma implementação mais avançada poderia agregar ou selecionar o mais relevante.
+    target_term = main_terms[0]
 
-        return EntityCloud(positive=top_positive, negative=top_negative)
+    query = db.collection('google_trends_data') \
+              .where('term', '==', target_term) \
+              .where('type', '==', 'interest_over_time') \
+              .order_by('created_at', direction=firestore.Query.DESCENDING) \
+              .limit(1)
 
+    docs = list(query.stream())
+    
+    if not docs:
+        logger.info(f"Nenhum dado de Google Trends encontrado para o termo '{target_term}'.")
+        return []
+        
+    trends_data = docs[0].to_dict().get('data', [])
+    
+    # Filtra os dados para o período solicitado e formata a resposta
+    results = []
+    for item in trends_data:
+        # A data no Firestore pode ser string ou datetime
+        item_date_str = item.get('date', '')
+        if isinstance(item_date_str, datetime):
+            item_date = item_date_str
+        else:
+            try:
+                item_date = datetime.fromisoformat(item_date_str.replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                continue
+
+        if start_date <= item_date <= end_date:
+            results.append(DataPoint(date=item_date.strftime('%Y-%m-%d'), value=item.get('value', 0)))
+            
+    return sorted(results, key=lambda x: x.date)
+
+
+@router.get("/combined_view", response_model=CombinedViewResponse)
+async def get_combined_view(
+    search_group: str = Query("brand", description="Grupo de busca ('brand' ou 'competitors')"),
+    days: int = Query(30, description="Período em dias para a análise"),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Endpoint para o Gráfico de Correlação: Menções & Interesse de Busca.
+    Combina dados de menções da plataforma com dados de interesse do Google Trends.
+    """
+    try:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        # Executa as duas buscas de dados em paralelo
+        mentions_task = get_mentions_over_time(db, search_group, start_date, end_date)
+        trends_task = get_trends_over_time(db, search_group, start_date, end_date)
+        
+        mentions_results, trends_results = await asyncio.gather(mentions_task, trends_task)
+
+        return CombinedViewResponse(
+            mentions_over_time=mentions_results,
+            trends_over_time=trends_results
+        )
+  
     except Exception as e:
-        logger.error(f"Erro em get_entity_cloud: {e}", exc_info=True)
+        logger.error(f"Erro em get_combined_view: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
 
 
-@router.get("/active_sources", response_model=List[ActiveSource])
-def get_active_sources(
-    search_group: str = Query(..., description="Grupo de busca (ex: 'marca' ou 'concorrente')"),
+@router.get("/kpis", response_model=KpiResponse)
+def get_kpis(
+    search_group: str = Query("brand", description="Grupo de busca ('brand' ou 'competitors')"),
     days: int = Query(7, description="Período em dias para a análise"),
     db: firestore.Client = Depends(get_db)
 ):
     """
-    Retorna um ranking das fontes (veículos) mais ativas.
+    Endpoint para os KPIs (Key Performance Indicators) do Dashboard Principal.
+    Calcula o volume total de menções e o sentimento médio no período.
     """
     try:
         end_date = datetime.utcnow()
@@ -182,168 +154,28 @@ def get_active_sources(
                   .where('publish_date', '<=', end_date) \
                   .where('status', '==', 'nlp_ok')
 
-        docs = query.stream()
+        docs = list(query.stream())
 
-        source_counts = Counter()
-        for doc in docs:
-            data = doc.to_dict()
-            source = data.get('displayLink')
-            if source:
-                source_counts[source] += 1
+        total_mentions = len(docs)
+        total_sentiment_score = 0
         
-        sorted_sources = sorted(source_counts.items(), key=lambda item: item[1], reverse=True)
+        if total_mentions == 0:
+            return KpiResponse(total_mentions=0, average_sentiment=0.0)
 
-        return [{"source": source, "mentions": count} for source, count in sorted_sources[:20]]
-
-    except Exception as e:
-        logger.error(f"Erro em get_active_sources: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
-
-@router.get("/share_of_voice", response_model=List[ShareOfVoicePoint])
-def get_share_of_voice(
-    days: int = Query(30, description="Período em dias para a análise"),
-    db: firestore.Client = Depends(get_db)
-):
-    """
-    Retorna a contagem diária de menções para 'brand' vs 'competitors'.
-    """
-    try:
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-
-        query = db.collection('monitor_results') \
-                  .where('publish_date', '>=', start_date) \
-                  .where('publish_date', '<=', end_date) \
-                  .where('status', '==', 'nlp_ok')
-        
-        docs = query.stream()
-
-        daily_counts = defaultdict(lambda: Counter())
-        for doc in docs:
-            data = doc.to_dict()
-            publish_date_obj = data.get('publish_date')
-            search_group = data.get('search_group')
-            if publish_date_obj and search_group in ['brand', 'competitors']:
-                date_str = publish_date_obj.strftime('%Y-%m-%d')
-                daily_counts[date_str][search_group] += 1
-
-        results = []
-        date_range = [start_date + timedelta(days=x) for x in range(days + 1)]
-        for day in date_range:
-            date_str = day.strftime('%Y-%m-%d')
-            counts = daily_counts.get(date_str, Counter())
-            results.append(ShareOfVoicePoint(
-                date=date_str,
-                brand=counts.get('brand', 0),
-                competitors=counts.get('competitors', 0)
-            ))
-        
-        return sorted(results, key=lambda x: x.date)
-
-    except Exception as e:
-        logger.error(f"Erro em get_share_of_voice: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
-
-@router.get("/sentiment_comparison", response_model=List[SentimentComparisonItem])
-def get_sentiment_comparison(
-    days: int = Query(7, description="Período em dias para a análise"),
-    db: firestore.Client = Depends(get_db)
-):
-    """
-    Compara a contagem de sentimentos entre 'brand' e 'competitors'.
-    """
-    try:
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-
-        query = db.collection('monitor_results') \
-                  .where('publish_date', '>=', start_date) \
-                  .where('publish_date', '<=', end_date) \
-                  .where('status', '==', 'nlp_ok')
-
-        docs = query.stream()
-
-        sentiment_by_group = defaultdict(lambda: Counter())
-        for doc in docs:
-            data = doc.to_dict()
-            search_group = data.get('search_group')
-            analysis = data.get('google_nlp_analysis')
-            if search_group in ['brand', 'competitors'] and analysis and isinstance(analysis, dict):
-                sentiment = analysis.get('sentiment', 'neutro')
-                sentiment_by_group[search_group][sentiment] += 1
-        
-        results = [
-            SentimentComparisonItem(
-                name='Marca',
-                positivo=sentiment_by_group['brand'].get('positivo', 0),
-                negativo=sentiment_by_group['brand'].get('negativo', 0),
-                neutro=sentiment_by_group['brand'].get('neutro', 0)
-            ),
-            SentimentComparisonItem(
-                name='Concorrentes',
-                positivo=sentiment_by_group['competitors'].get('positivo', 0),
-                negativo=sentiment_by_group['competitors'].get('negativo', 0),
-                neutro=sentiment_by_group['competitors'].get('neutro', 0)
-            )
-        ]
-        return results
-
-    except Exception as e:
-        logger.error(f"Erro em get_sentiment_comparison: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
-
-@router.get("/attack_feed", response_model=List[AttackFeedItem])
-def get_attack_feed(
-    days: int = Query(7, description="Período em dias para a análise"),
-    db: firestore.Client = Depends(get_db)
-):
-    """
-    Retorna menções negativas que citam tanto a marca quanto concorrentes.
-    """
-    try:
-        # 1. Buscar os termos de pesquisa
-        terms_doc = db.collection('search_terms').document('user_defined_terms').get()
-        if not terms_doc.exists:
-            return []
-        
-        terms_data = terms_doc.to_dict()
-        brand_terms = set(terms_data.get('brand', {}).get('main_terms', []))
-        competitor_terms = set(terms_data.get('competitors', {}).get('main_terms', []))
-
-        if not brand_terms or not competitor_terms:
-            return []
-
-        # 2. Buscar documentos com sentimento negativo no período
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-
-        query = db.collection('monitor_results') \
-                  .where('publish_date', '>=', start_date) \
-                  .where('publish_date', '<=', end_date) \
-                  .where('status', '==', 'nlp_ok')
-        
-        docs = query.stream()
-
-        attack_feed = []
         for doc in docs:
             data = doc.to_dict()
             analysis = data.get('google_nlp_analysis')
-
-            if analysis and isinstance(analysis, dict) and analysis.get('sentiment') == 'negativo':
-                entities = set(analysis.get('entities', []))
-                
-                # 3. Verificar se há coocorrência de termos
-                mentions_brand = any(term in entities for term in brand_terms)
-                mentions_competitor = any(term in entities for term in competitor_terms)
-
-                if mentions_brand and mentions_competitor:
-                    attack_feed.append(AttackFeedItem(**data))
+            if analysis and isinstance(analysis, dict):
+                # O score de sentimento varia de -1.0 (negativo) a 1.0 (positivo)
+                total_sentiment_score += analysis.get('score', 0.0)
         
-        # Ordena os resultados pelos mais recentes primeiro
-        attack_feed.sort(key=lambda x: x.publish_date, reverse=True)
+        average_sentiment = total_sentiment_score / total_mentions if total_mentions > 0 else 0.0
 
-        return attack_feed[:50] # Limita a 50 resultados
+        return KpiResponse(
+            total_mentions=total_mentions,
+            average_sentiment=round(average_sentiment, 2)
+        )
 
     except Exception as e:
-        logger.error(f"Erro em get_attack_feed: {e}", exc_info=True)
+        logger.error(f"Erro em get_kpis: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")

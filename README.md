@@ -99,6 +99,7 @@ O backend é o orquestrador central da plataforma.
 | **system_logs** | `/monitor` | Registra o início, fim e status das tarefas agendadas (Scraper, NLP). |
 | **system_status** | `/monitor` | Documento único que armazena o estado atual do sistema (ex: "executando scraper"). |
 | **trends_terms** | `/trends` | Armazena os termos-chave para monitoramento no Google Trends. |
+| **google_trends_data** | `/analytics` | Armazena os dados históricos e de interesse de busca coletados pelo módulo `search_google_trends`. |
 
 ### 3.3. Módulos Externos (Scraper, NLP, etc.)
 
@@ -108,3 +109,12 @@ O backend é o orquestrador central da plataforma.
     2.  Um Cloud Scheduler aciona o serviço **Scraper**, que lê os documentos `pending`, processa-os e atualiza seu status para `scraper_ok` ou `scraper_failed`.
     3.  Outro Cloud Scheduler aciona o serviço de **NLP**, que lê os documentos `scraper_ok`, realiza a análise e atualiza o status para `nlp_ok` ou `nlp_failed`.
 -   O backend expõe rotas (`/monitor/scraper-stats`, `/monitor/nlp-stats`) para que o frontend possa consultar o progresso desses processos assíncronos.
+
+### 3.4. Módulo de Analytics
+
+-   O backend expõe endpoints específicos para alimentar os dashboards do frontend. Estes endpoints consomem os dados pré-processados das coleções `monitor_results` e `google_trends_data` para fornecer insights agregados.
+
+| Rota Principal | Método | Descrição |
+| :--- | :--- | :--- |
+| `/analytics/combined_view` | `GET` | Retorna dados combinados de menções e interesse de busca (Google Trends) para o gráfico de correlação. |
+| `/analytics/kpis` | `GET` | Calcula e retorna os Key Performance Indicators (KPIs), como volume total de menções e sentimento médio. |
