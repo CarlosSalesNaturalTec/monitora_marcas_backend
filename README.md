@@ -1,142 +1,109 @@
-# 📌 Documentação — Plataforma de Social Listening
+# Documentação do Módulo Backend
 
-## 1. Arquitetura Geral
+Este documento detalha a arquitetura, funcionalidades e interações do backend da Plataforma de Social Listening.
 
-A plataforma é composta por dois grandes módulos:
+## 1. Detalhes Técnicos
 
-- **Frontend:** Next.js (React/TypeScript)  
-- **Backend:** FastAPI (Python)  
-- **Autenticação e Banco de Dados:** Firebase (Auth e Firestore)  
-- **Hospagem:** Google Cloud Run (containers Docker para frontend e backend)
+O backend é uma API RESTful robusta que serve como o núcleo da plataforma.
 
-Controle de acesso é feito por **Custom Claims do Firebase Authentication**, permitindo RBAC (role-based access control).
+- **Framework Principal:** [FastAPI](https://fastapi.tiangolo.com/), um framework web de alta performance para Python 3.8+.
+- **Servidor ASGI:** [Uvicorn](https://www.uvicorn.org/) é usado como o servidor que executa a aplicação FastAPI.
+- **Validação de Dados:** [Pydantic](https://pydantic-docs.helpmanual.io/) é utilizado extensivamente para definir schemas de dados, garantindo a validação, serialização e documentação automática da API.
+- **Autenticação e Autorização:** A segurança é implementada através da validação de **Firebase ID Tokens**. Todas as rotas protegidas esperam um header `Authorization: Bearer <idToken>`. O RBAC (Role-Based Access Control) é gerenciado via **Custom Claims** do Firebase.
+- **Banco de Dados:** [Google Firestore](https://firebase.google.com/docs/firestore) é o banco de dados NoSQL utilizado, acessado através do SDK `firebase-admin`.
+- **Dependências:** Gerenciadas através do arquivo `requirements.txt`.
 
----
+## 2. Instruções de Uso e Implantação
 
-## 2. Frontend
+### 2.1. Configuração do Ambiente Local
 
-- **Framework:** [Next.js](https://nextjs.org/) (React + TypeScript)  
-- **Estilização:**  
-  - [Tailwind CSS](https://tailwindcss.com/)  
-  - [shadcn/ui](https://ui.shadcn.com/)  
-- **Gerenciamento de Estado do Servidor:** [TanStack Query](https://tanstack.com/query)  
-- **Comunicação com API:** [Axios](https://axios-http.com/)  
-- **Autenticação (lado do cliente):** [Firebase Authentication](https://firebase.google.com/docs/auth)  
-- **Gráficos/Dashboards:** decisão pendente → `Recharts`, `ECharts` ou `ApexCharts`  
-- **Deployment:** Container Docker publicado no Google Cloud Run  
-- **Execução local:**  
-  ```bash
-  npm run dev
-  # ou yarn dev / pnpm dev / bun dev
-  ```
-  Disponível em `http://localhost:3000`.
+1.  **Credenciais de Serviço do Firebase:**
+    -   Coloque o arquivo JSON da sua Service Account do Firebase dentro da pasta `config/`. O arquivo `firebase_admin_init.py` espera encontrá-lo nesse diretório.
+    -   **Importante:** Este arquivo é sensível e não deve ser commitado no repositório. O `.gitignore` já está configurado para ignorá-lo.
 
----
+2.  **Variáveis de Ambiente:**
+    -   Copie o arquivo `.env.example` para um novo arquivo chamado `.env`.
+    -   Preencha a variável `GOOGLE_APPLICATION_CREDENTIALS` com o caminho para o seu arquivo de Service Account.
 
-## 3. Backend
+    ```bash
+    # .env
+    GOOGLE_APPLICATION_CREDENTIALS=./config/your-service-account-file.json
+    ```
 
-- **Framework:** [FastAPI](https://fastapi.tiangolo.com/)  
-- **Servidor ASGI:** [Uvicorn](https://www.uvicorn.org/)  
-- **Autenticação:**  
-  - Validação de **Firebase ID Tokens** via `firebase-admin`  
-  - Headers `Authorization: Bearer <idToken>` obrigatórios  
-- **Banco de Dados:** [Firestore](https://firebase.google.com/docs/firestore) via `google-cloud-firestore`  
-- **CORS:** configurado para aceitar requisições do frontend  
-- **Deployment:** Container Docker publicado no Google Cloud Run  
-- **Execução local:**  
-  ```bash
-  cd backend
-  python -m venv venv
-  .\venv\Scripts\activate   # Windows
-  pip install -r requirements.txt
-  uvicorn main:app --reload
-  ```
-  Disponível em `http://127.0.0.1:8000`.
+3.  **Instalação de Dependências (em um ambiente virtual):
+    ```bash
+    # Navegue até a pasta do backend
+    cd backend
 
----
+    # Crie e ative o ambiente virtual
+    python -m venv venv
+    .\venv\Scripts\activate  # Windows
+    # source venv/bin/activate # Linux/macOS
 
-## 4. Fluxo de Autenticação (Front ↔ Back)
+    # Instale as dependências
+    pip install -r requirements.txt
+    ```
 
-1. Usuário faz login no **Firebase Auth** (Frontend).  
-2. SDK retorna `idToken`.  
-3. Token é enviado em cada requisição ao Backend (`Authorization: Bearer <idToken>`).  
-4. Backend valida token com `firebase-admin`.  
-5. Se válido → rota autorizada; senão → `HTTP 401`.
+4.  **Execução:**
+    ```bash
+    uvicorn main:app --reload
+    ```
+    A API estará disponível em `http://127.0.0.1:8000` e a documentação interativa (Swagger UI) em `http://127.0.0.1:8000/docs`.
 
----
+### 2.2. Implantação (Deploy) no Google Cloud Run
 
-## 5. Gerenciamento de Permissões (RBAC)
+O deploy é feito containerizando a aplicação com Docker e publicando-a no Google Cloud Run.
 
-- Implementado com **Custom Claims** no Firebase Authentication.  
-- Papéis como `ADM` são atribuídos no backend com `auth.set_custom_user_claims(uid, {'role': 'ADM'})`.  
-- Validação ocorre tanto no **backend** (dependência em rotas protegidas) quanto no **frontend** (renderização condicional).  
+1.  **Comando de Deploy:**
+    -   O comando a seguir utiliza o Google Cloud Build para criar a imagem Docker e, em seguida, a implanta no Cloud Run.
 
----
+    ```bash
+    # Substitua [PROJECT_ID] pelo ID do seu projeto no GCP
+    gcloud builds submit --tag gcr.io/[PROJECT_ID]/social-listening-backend ./backend
 
-## 6. Estratégia de Deploy (Google Cloud Run)
+    gcloud run deploy social-listening-backend \
+      --image gcr.io/[PROJECT_ID]/social-listening-backend \
+      --platform managed \
+      --region us-central1 \
+      --allow-unauthenticated \
+      --port 8000
+    ```
 
-### Backend
-```bash
-gcloud builds submit --tag gcr.io/[PROJECT_ID]/social-listening-backend ./backend
-gcloud run deploy social-listening-backend   --image gcr.io/[PROJECT_ID]/social-listening-backend   --platform managed --region us-central1   --allow-unauthenticated --port 8000
-```
+## 3. Relação com Outros Módulos
 
-### Frontend
-- `Dockerfile` configurado para aceitar variáveis do Firebase no build.  
-- Uso de `cloudbuild.yaml` para passar substituições.  
-```bash
-gcloud builds submit ./frontend --config ./frontend/cloudbuild.yaml   --substitutions=_NEXT_PUBLIC_FIREBASE_API_KEY="..."
-gcloud run deploy social-listening-frontend   --image gcr.io/[PROJECT_ID]/social-listening-frontend   --platform managed --region us-central1 --allow-unauthenticated
-```
+O backend é o orquestrador central da plataforma.
 
----
+### 3.1. Frontend (Next.js)
 
-## 7. Observações Importantes
+-   O backend serve como a única fonte de verdade e lógica de negócio para o frontend.
+-   Ele expõe todos os endpoints necessários para o frontend gerenciar usuários, termos, iniciar coletas e visualizar dados.
+-   A autenticação do frontend é validada aqui, garantindo que apenas usuários autorizados possam acessar os recursos.
 
-- Ambiente de desenvolvimento é **Windows**
-- Claims de usuários só devem ser atribuídos no **backend**, nunca no frontend.  
-- Para acessar Firestore, a Service Account configurada no backend deve ter a role **Cloud Datastore User**.
+### 3.2. Firebase (Auth e Firestore)
 
+-   **Firebase Admin SDK:** É a principal ferramenta de interação com os serviços do Firebase.
+-   **Authentication:**
+    -   Valida os ID Tokens recebidos do frontend.
+    -   Gerencia usuários (criação, deleção).
+    -   Atribui e lê Custom Claims (ex: `{'role': 'ADM'}`) para implementar o RBAC.
+-   **Firestore:** O backend é o único módulo com permissão de escrita direta no Firestore. Ele gerencia as seguintes coleções:
 
-## 8. Funções do Sistema
+| Coleção | Rota Principal | Descrição |
+| :--- | :--- | :--- |
+| **users** | `/users`, `/admin` | Armazena informações adicionais dos usuários, como a `role`. |
+| **search_terms** | `/terms` | Documento único (`singleton`) que armazena os termos de busca da marca e concorrentes. |
+| **monitor_runs** | `/monitor` | Registra os metadados de cada execução de coleta (relevante, histórica, contínua). |
+| **monitor_results** | `/monitor` | Armazena cada URL/resultado individual encontrado. O ID do documento é um hash da URL para evitar duplicatas. |
+| **monitor_logs** | `/monitor` | Log de cada requisição feita à API do Google CSE. |
+| **daily_quotas** | `/monitor` | Documento que controla o uso da cota diária de requisições. |
+| **system_logs** | `/monitor` | Registra o início, fim e status das tarefas agendadas (Scraper, NLP). |
+| **system_status** | `/monitor` | Documento único que armazena o estado atual do sistema (ex: "executando scraper"). |
 
-- **Sistema/Usuários (rota `/users`)**: Página para controle de usuários que possuem acesso ao sistema e suas respectivas permissões. 
-  - Permite o cadastro de novos usuários com especificação de nível de permissão.
-  - Permite alteração de senha a partir da informação do email do usuário e a nova senha.
-  - Permite a exclusão de usuários cadastrados a partir da informação do email a ser excluido.
+### 3.3. Módulos Externos (Scraper, NLP, etc.)
 
-- **Sistema/Termos de Pesquisa (rota `/terms`)**: Página para o gerenciamento centralizado dos termos de pesquisa de toda a plataforma.
-  - Permite o CRUD (Criar, Ler, Atualizar, Deletar) de termos principais, sinônimos e termos a excluir.
-  - A interface é dividida em abas para "Marca" e "Concorrentes".
-  - O acesso para edição é restrito a usuários com a permissão `ADM`. Usuários não-administradores visualizam os termos em modo somente leitura.
-  - Inclui uma aba de **Preview** que utiliza a API do Google CSE para testar os termos configurados em tempo real, retornando uma lista de URLs e snippets de HTML correspondentes.
-
-- **Sistema/Buscas (rota `/monitor`)**: Ferramenta para executar buscas ativas com os termos configurados e analisar os resultados. O fluxo foi unificado para simplificar o processo e garantir a cobertura completa dos dados.
-  - **Estrutura de Dados no Firestore**:
-    - `monitor_runs`: Coleção que armazena os metadados de cada execução (o quê, quando, como foi buscado).
-    - `monitor_results`: Armazena cada resultado individual (URL, snippet) encontrado, com um ID baseado no hash da URL para evitar duplicatas.
-    - `monitor_logs`: Registra cada requisição individual feita à API do Google.
-    - `daily_quotas`: Controla o uso da cota diária de 100 requisições.
-  - **Coleta Inicial (Endpoint: `POST /monitor/run`)**:
-    - Ponto de partida do monitoramento, acionado manualmente pelo administrador. O usuário fornece uma **data de início** para a busca histórica.
-    - O processo é executado em duas etapas sequenciais:
-      1.  **Busca Relevante**: O sistema primeiro realiza uma busca pelos dados mais recentes para popular a plataforma com informações atuais.
-      2.  **Início da Busca Histórica**: Imediatamente após, o sistema começa a busca retroativa, dia a dia, partindo de "ontem" e avançando para o passado.
-    - Ao final, mesmo que a cota não seja atingida, ele **sempre** define um marcador de interrupção (`last_interruption_date`) para garantir que o processo agendado continue de onde parou.
-  - **Coleta Contínua Agendada (Endpoint: `POST /monitor/run/continuous`)**:
-    - Projetado para ser acionado por um serviço de agendamento (ex: Google Cloud Scheduler) uma ou mais vezes ao dia.
-    - Garante que o sistema continue capturando menções das últimas 24 horas, mantendo os dados sempre atualizados.
-  - **Coleta Histórica Agendada (Endpoint: `POST /monitor/run/historical-scheduled`)**:
-    - Também acionado por um scheduler (idealmente uma vez ao dia, após a renovação da cota).
-    - Este endpoint possui uma lógica robusta de recuperação:
-      1.  Primeiro, ele procura por um marcador de interrupção (`last_interruption_date`) deixado pela execução anterior.
-      2.  Se não encontrar, ele verifica qual foi o dia mais antigo já processado na coleção `monitor_runs`.
-      3.  Se a data mais antiga for posterior à data de início configurada, ele assume a continuação a partir do dia anterior, garantindo que a coleta não pare por falhas inesperadas.
-  - **Gerenciamento e Status**:
-    - **Status da Coleta (`GET /monitor/historical-status`)**: Fornece o estado atual da busca histórica (em andamento, pausada ou concluída).
-    - **Detalhes da Execução (`GET /monitor/run/{run_id}`)**: Retorna os metadados completos de uma execução específica, usado para detalhamento na interface.
-    - **Atualização da Data Histórica (`POST /monitor/update-historical-start-date`)**: Ferramenta administrativa para alterar a data de início da busca histórica ou para "resetar" o processo, forçando a retomada da coleta pelo scheduler.
-    - **Limpeza de Dados (`DELETE /monitor/all-data`)**: Endpoint para administradores que apaga todos os dados de monitoramento, permitindo um recomeço do zero.
-  - **Controle de Cota e Duplicatas**:
-    - Um contador global limita o total de requisições à API do Google a 100 por dia.
-    - O sistema utiliza um hash da URL como ID do documento no Firestore para evitar o armazenamento de links duplicados.
+-   O backend **não** chama diretamente os outros serviços (como Scraper ou NLP).
+-   A interação é assíncrona e orquestrada via **Google Cloud Scheduler** e **Firestore**.
+    1.  O backend (via rota `/monitor`) coleta URLs e as salva no Firestore com status `pending`.
+    2.  Um Cloud Scheduler aciona o serviço **Scraper**, que lê os documentos `pending`, processa-os e atualiza seu status para `scraper_ok` ou `scraper_failed`.
+    3.  Outro Cloud Scheduler aciona o serviço de **NLP**, que lê os documentos `scraper_ok`, realiza a análise e atualiza o status para `nlp_ok` ou `nlp_failed`.
+-   O backend expõe rotas (`/monitor/scraper-stats`, `/monitor/nlp-stats`) para que o frontend possa consultar o progresso desses processos assíncronos.
