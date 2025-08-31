@@ -1,16 +1,20 @@
 # backend/routers/analytics.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from google.cloud import firestore
-from typing import List
-from collections import defaultdict
+from typing import List, Optional
+from collections import defaultdict, Counter
 from datetime import datetime, timedelta
 import logging
 import asyncio
+import math
 
 from schemas.analytics_schemas import (
     CombinedViewResponse,
     KpiResponse,
-    DataPoint
+    DataPoint,
+    Entity,
+    Mention,
+    MentionsResponse
 )
 
 # Configuração básica de logging
@@ -178,4 +182,110 @@ def get_kpis(
 
     except Exception as e:
         logger.error(f"Erro em get_kpis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+
+@router.get("/entities_cloud", response_model=List[Entity])
+def get_entities_cloud(
+    search_group: str = Query("brand", description="Grupo de busca ('brand' ou 'competitors')"),
+    days: int = Query(7, description="Período em dias para a análise"),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Endpoint para a Nuvem de Entidades.
+    Agrega e retorna as entidades mais mencionadas no período.
+    """
+    try:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        query = db.collection('monitor_results') \
+                  .where('search_group', '==', search_group) \
+                  .where('publish_date', '>=', start_date) \
+                  .where('publish_date', '<=', end_date) \
+                  .where('status', '==', 'nlp_ok')
+
+        docs = query.stream()
+        entity_counts = Counter()
+
+        for doc in docs:
+            data = doc.to_dict()
+            analysis = data.get('google_nlp_analysis')
+            if analysis and isinstance(analysis, dict):
+                entities = analysis.get('entities', [])
+                # Garante que as entidades sejam strings antes de contá-las
+                entity_counts.update([str(e) for e in entities if e])
+
+        # Retorna as 50 entidades mais comuns
+        most_common_entities = entity_counts.most_common(50)
+        
+        return [Entity(text=text, value=count) for text, count in most_common_entities]
+
+    except Exception as e:
+        logger.error(f"Erro em get_entities_cloud: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+
+@router.get("/mentions", response_model=MentionsResponse)
+def get_mentions(
+    search_group: str = Query("brand", description="Grupo de busca ('brand' ou 'competitors')"),
+    days: int = Query(7, description="Período em dias para a análise"),
+    page: int = Query(1, description="Número da página"),
+    page_size: int = Query(10, description="Itens por página"),
+    entity: Optional[str] = Query(None, description="Filtra menções por uma entidade específica"),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Endpoint para a Tabela de Menções.
+    Retorna uma lista paginada de menções, com filtro opcional por entidade.
+    """
+    try:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        query = db.collection('monitor_results') \
+                  .where('search_group', '==', search_group) \
+                  .where('publish_date', '>=', start_date) \
+                  .where('publish_date', '<=', end_date) \
+                  .where('status', '==', 'nlp_ok')
+
+        # Adiciona o filtro de entidade se for fornecido
+        if entity:
+            query = query.where('google_nlp_analysis.entities', 'array_contains', entity)
+
+        # A paginação em queries complexas no Firestore é desafiadora.
+        # A abordagem mais simples e eficaz para volumes de dados moderados é
+        # buscar os documentos e paginar na memória.
+        docs = list(query.stream())
+
+        # Ordena os resultados pela data de publicação, mais recentes primeiro
+        docs_sorted = sorted(docs, key=lambda doc: doc.to_dict().get('publish_date', datetime.min), reverse=True)
+        
+        total_items = len(docs_sorted)
+        total_pages = math.ceil(total_items / page_size)
+        
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        
+        paginated_docs = docs_sorted[start_index:end_index]
+
+        mentions_list = []
+        for doc in paginated_docs:
+            data = doc.to_dict()
+            analysis = data.get('google_nlp_analysis', {})
+            
+            mention_data = {
+                "link": data.get("link", ""),
+                "title": data.get("title", ""),
+                "snippet": data.get("snippet", ""),
+                "publish_date": data.get("publish_date"),
+                "sentiment": analysis.get("sentiment", "neutro"),
+                "sentiment_score": analysis.get("score", 0.0)
+            }
+            mentions_list.append(Mention(**mention_data))
+
+        return MentionsResponse(total_pages=total_pages, mentions=mentions_list)
+
+    except Exception as e:
+        logger.error(f"Erro em get_mentions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")

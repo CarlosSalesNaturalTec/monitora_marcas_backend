@@ -118,3 +118,5 @@ O backend é o orquestrador central da plataforma.
 | :--- | :--- | :--- |
 | `/analytics/combined_view` | `GET` | Retorna dados combinados de menções e interesse de busca (Google Trends) para o gráfico de correlação. |
 | `/analytics/kpis` | `GET` | Calcula e retorna os Key Performance Indicators (KPIs), como volume total de menções e sentimento médio. |
+| `/analytics/entities_cloud` | `GET` | Agrega e retorna as entidades mais mencionadas para a nuvem de palavras. |
+| `/analytics/mentions` | `GET` | Retorna uma lista paginada de menções, com filtro opcional por entidade. |
