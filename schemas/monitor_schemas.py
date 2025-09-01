@@ -114,6 +114,7 @@ class UnifiedMonitorResult(BaseModel):
     snippet: str
     htmlSnippet: str
     status: str
+    error_message: Optional[str] = None
     
     # From MonitorRun
     search_type: Literal["relevante", "historico", "continuo"]

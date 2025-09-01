@@ -916,7 +916,8 @@ def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
                 search_group=run_info.search_group,
                 collected_at=run_info.collected_at,
                 range_start=run_info.range_start,
-                range_end=run_info.range_end
+                range_end=run_info.range_end,
+                error_message=result_data.get("error_message")
             )
             unified_results.append(unified_item)
             
@@ -934,7 +935,7 @@ def get_all_monitor_results(current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/monitor/results-by-status/{status}", response_model=List[UnifiedMonitorResult], tags=["Monitor"])
-def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_current_user)):
+def get_monitor_results_by_status(status: str, limit: int = 100, current_user: dict = Depends(get_current_user)):
     """
     Busca resultados de monitoramento filtrados por um status específico.
     """
@@ -955,7 +956,7 @@ def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_
         runs_map = {doc.id: MonitorRun(**doc.to_dict()) for doc in runs_ref}
 
         # 3. Buscar resultados filtrando pelo status
-        results_ref = db.collection("monitor_results").where("status", "==", status).limit(200).stream()
+        results_ref = db.collection("monitor_results").where("status", "==", status).limit(limit).stream()
         
         unified_results = []
         for result_doc in results_ref:
@@ -979,7 +980,8 @@ def get_monitor_results_by_status(status: str, current_user: dict = Depends(get_
                 search_group=run_info.search_group,
                 collected_at=run_info.collected_at,
                 range_start=run_info.range_start,
-                range_end=run_info.range_end
+                range_end=run_info.range_end,
+                error_message=result_data.get("error_message")
             )
             unified_results.append(unified_item)
             
