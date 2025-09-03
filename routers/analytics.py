@@ -1,7 +1,7 @@
 # backend/routers/analytics.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from google.cloud import firestore
-from typing import List, Optional
+from typing import List, Optional, Dict
 from collections import defaultdict, Counter
 from datetime import datetime, timedelta
 import logging
@@ -451,4 +451,95 @@ def get_sentiment_over_time(
 
     except Exception as e:
         logger.error(f"Erro em get_sentiment_over_time: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+
+@router.get("/top-terms-24h", response_model=List[Entity])
+async def get_top_terms_24h(db: firestore.Client = Depends(get_db)):
+    """
+    Retorna os 50 termos (entidades) mais mencionados nas últimas 24 horas
+    a partir da coleção `instagram_posts`.
+    """
+    try:
+        # Define o período das últimas 24 horas
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=1)
+
+        # Consulta os posts na coleção `instagram_posts`
+        query = db.collection('instagram_posts') \
+                  .where('taken_at', '>=', start_date) \
+                  .where('taken_at', '<=', end_date)
+        
+        docs = query.stream()
+        
+        # Usa um Counter para contar a frequência de cada termo
+        term_counts = Counter()
+        
+        for doc in docs:
+            data = doc.to_dict()
+            # Acessa a lista de termos dentro de google_nlp_analysis
+            entities = data.get('google_nlp_analysis', {}).get('entities', [])
+            # Atualiza a contagem com os termos da postagem atual
+            term_counts.update(entities)
+            
+        # Pega os 50 termos mais comuns
+        most_common_terms = term_counts.most_common(50)
+        
+        # Formata a resposta no modelo esperado (List[Entity])
+        response = [Entity(text=term, value=count) for term, count in most_common_terms]
+        
+        return response
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar top termos das últimas 24h: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")
+
+
+@router.get("/top-terms-by-profile", response_model=Dict[str, List[Entity]])
+async def get_top_terms_by_profile(
+    profiles: List[str] = Query(..., description="Lista de nomes de perfis de usuário para buscar."),
+    days: int = Query(7, description="Período em dias para a análise."),
+    db: firestore.Client = Depends(get_db)
+):
+    """
+    Retorna os 50 termos (entidades) mais mencionados por perfil de usuário
+    a partir da coleção `instagram_posts` para um determinado período.
+    """
+    try:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+
+        # Dicionário para armazenar os contadores de termos para cada perfil
+        profile_term_counts = {profile: Counter() for profile in profiles}
+
+        # A cláusula 'in' do Firestore suporta no máximo 10 itens na lista.
+        # Se houver mais de 10 perfis, a consulta precisa ser dividida.
+        profile_chunks = [profiles[i:i + 10] for i in range(0, len(profiles), 10)]
+
+        for chunk in profile_chunks:
+            query = db.collection('instagram_posts') \
+                      .where('owner_username', 'in', chunk) \
+                      .where('taken_at', '>=', start_date) \
+                      .where('taken_at', '<=', end_date)
+            
+            docs = query.stream()
+
+            for doc in docs:
+                data = doc.to_dict()
+                profile_name = data.get('owner_username')
+                
+                if profile_name in profile_term_counts:
+                    entities = data.get('google_nlp_analysis', {}).get('entities', [])
+                    profile_term_counts[profile_name].update(entities)
+
+        # Formata a resposta final
+        response = {}
+        for profile, counts in profile_term_counts.items():
+            most_common = counts.most_common(50)
+            response[profile] = [Entity(text=term, value=count) for term, count in most_common]
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar top termos por perfil: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno no servidor: {e}")

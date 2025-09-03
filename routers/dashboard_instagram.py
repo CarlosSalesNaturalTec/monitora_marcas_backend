@@ -433,13 +433,27 @@ async def get_vulnerability_identification(profiles: List[str] = Query(...), lim
 async def get_hashtag_feed(hashtag: str, limit: int = 20):
     try:
         posts_ref = db.collection('instagram_posts')
-        query = posts_ref.where('monitored_hashtags', 'array-contains', hashtag).order_by('post_date_utc', direction=firestore.Query.DESCENDING).limit(limit)
-        docs = query.stream()
-        return [{"id": doc.id, "data": doc.to_dict()} for doc in docs]
-    except FailedPrecondition:
+        query = posts_ref.where('monitored_hashtags', 'array-contains', hashtag)
+        docs = list(query.stream())
+
+        if not docs:
+            return []
+
+        docs_data = [{"id": doc.id, "data": doc.to_dict()} for doc in docs]
+
+        def get_safe_date(item):
+            date_val = item['data'].get('post_date_utc')
+            if isinstance(date_val, datetime):
+                return date_val
+            return datetime.min
+
+        docs_data.sort(key=get_safe_date, reverse=True)
+
+        return docs_data[:limit]
+    except Exception:
+        # Retorna uma lista vazia em caso de qualquer erro (incluindo índice ausente ou coleção vazia)
+        # para garantir que o frontend não quebre, alinhando-se com o comportamento de outros endpoints.
         return []
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar feed da hashtag: {str(e)}")
 
 @router.get("/topic-sentiment-over-time/{hashtag}")
 async def get_topic_sentiment_over_time(hashtag: str, days: int = 30):
