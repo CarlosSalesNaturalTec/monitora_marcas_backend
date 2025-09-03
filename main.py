@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
 
-from routers import users, terms, monitor, system_logs, analytics, trends, service_accounts, instagram_targets
+from routers import users, terms, monitor, system_logs, analytics, trends, service_accounts, instagram_targets, dashboard_instagram
 
 # --- FastAPI App Initialization ---
 
@@ -38,6 +38,7 @@ app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
 app.include_router(trends.router, tags=["Trends"])
 app.include_router(service_accounts.router)
 app.include_router(instagram_targets.router)
+app.include_router(dashboard_instagram.router)
 
 
 # --- Root Endpoint ---
