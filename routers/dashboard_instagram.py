@@ -251,6 +251,105 @@ async def get_top_commenters(profile_username: str, analysis_type: str = 'suppor
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar top commenters: {str(e)}")
 
+
+@router.get("/commenters-influence/{profile_username}")
+async def get_commenters_influence(profile_username: str, limit: int = 50):
+    """
+    Agrega dados de comentaristas para o mapa de influência, retornando
+    a contagem de comentários e a média de seguidores de cada um.
+    """
+    try:
+        posts_ref = db.collection('instagram_posts')
+        posts_query = posts_ref.where('owner_username', '==', profile_username).select([]).stream()
+        post_ids = [doc.id for doc in posts_query]
+
+        if not post_ids:
+            return []
+
+        # Dicionário para agregar os dados: { 'username': {'comments': count, 'followers_list': [...] } }
+        commenters_data = {}
+
+        for post_id in post_ids:
+            comments_ref = db.collection(f'instagram_posts/{post_id}/instagram_comments')
+            docs = comments_ref.stream()
+            for doc in docs:
+                comment = doc.to_dict()
+                owner_info = comment.get('owner', {})
+                username = owner_info.get('username') if isinstance(owner_info, dict) else None
+                followers = owner_info.get('followers') if isinstance(owner_info, dict) else None
+
+                if username:
+                    if username not in commenters_data:
+                        commenters_data[username] = {'comments': 0, 'followers_list': []}
+                    
+                    commenters_data[username]['comments'] += 1
+                    if followers is not None:
+                        commenters_data[username]['followers_list'].append(followers)
+        
+        # Processa os dados agregados para calcular a média e formatar a saída
+        result = []
+        for username, data in commenters_data.items():
+            followers_list = data['followers_list']
+            avg_followers = sum(followers_list) / len(followers_list) if followers_list else 0
+            result.append({
+                "user": username,
+                "comments": data['comments'],
+                "followers": avg_followers
+            })
+        
+        # Ordena por número de comentários para retornar os mais ativos
+        result.sort(key=lambda x: x['comments'], reverse=True)
+
+        return result[:limit]
+
+    except Exception:
+        # Retorna uma lista vazia em caso de qualquer erro (incluindo índice ausente)
+        return []
+
+
+@router.get("/sentiment-by-post/{profile_username}")
+async def get_sentiment_by_post(profile_username: str, limit: int = 10):
+    """
+    Para os posts mais recentes de um perfil, calcula a distribuição de sentimentos
+    dos comentários.
+    """
+    try:
+        posts_ref = db.collection('instagram_posts')
+        # Pega os posts mais recentes do perfil
+        posts_query = posts_ref.where('owner_username', '==', profile_username).order_by('post_date_utc', direction=firestore.Query.DESCENDING).limit(limit)
+        post_docs = posts_query.stream()
+
+        results = []
+        for doc in post_docs:
+            post_id = doc.id
+            post_caption = doc.to_dict().get('caption', f'Post ID: {post_id}')[:50] # Pega os primeiros 50 caracteres da legenda
+            
+            comments_ref = db.collection(f'instagram_posts/{post_id}/instagram_comments')
+            comment_docs = comments_ref.limit(200).stream() # Analisa até 200 comentários por post
+
+            sentiments = Counter()
+            for comment_doc in comment_docs:
+                score = comment_doc.to_dict().get('sentiment_score')
+                if score is not None:
+                    if score > 0.25:
+                        sentiments['Positivo'] += 1
+                    elif score < -0.25:
+                        sentiments['Negativo'] += 1
+                    else:
+                        sentiments['Neutro'] += 1
+            
+            results.append({
+                "post": post_caption,
+                "Positivo": sentiments['Positivo'],
+                "Negativo": sentiments['Negativo'],
+                "Neutro": sentiments['Neutro'],
+            })
+        
+        return results
+    except Exception:
+        return []
+
+
 # --- Aba 3: Inteligência Competitiva ---
 
 from typing import List
