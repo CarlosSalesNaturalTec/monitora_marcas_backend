@@ -1,8 +1,10 @@
 fastapi
 uvicorn[standard]
 google-cloud-firestore
+google-cloud-secret-manager
 firebase-admin
 python-jose[cryptography]
 pydantic[email]
 python-dotenv
 requests
+python-multipart
